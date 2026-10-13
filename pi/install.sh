@@ -490,7 +490,9 @@ install_files() {
     install_file "$SCRIPT_DIR/dock-unlock" "$SBIN_DIR/dock-unlock" 0755
     install_file "$SCRIPT_DIR/dock-lock" "$SBIN_DIR/dock-lock" 0755
     install_file "$SCRIPT_DIR/dock-automount" "$SBIN_DIR/dock-automount" 0755
+    install_file "$SCRIPT_DIR/dock-update" "$SBIN_DIR/dock-update" 0755
     install_file "$SCRIPT_DIR/dockd.service" "$UNIT_DIR/dockd.service" 0644
+    install_file "$SCRIPT_DIR/dock-update.service" "$UNIT_DIR/dock-update.service" 0644
     install_file "$SCRIPT_DIR/99-calcscreen.rules" /etc/udev/rules.d/99-calcscreen.rules 0644
 
     write_file /etc/tmpfiles.d/calcscreen.conf 0644 <<EOF
@@ -766,6 +768,8 @@ EOF
         sync
     fi
     run systemctl enable "$DATA_MOUNT_UNIT" "$NM_CONN_UNIT" "$NM_STATE_UNIT"
+    # Working area for the USB updater (staged package + phase/result).
+    run install -d -m 0755 "$STATE_DIR/update"
     ok "settings and Wi-Fi networks are stored on $dev"
 }
 
@@ -816,6 +820,8 @@ configure_services() {
     fi
 
     run systemctl enable dockd.service
+    # Resume a staged USB update at boot (a no-op when nothing is staged).
+    run systemctl enable dock-update.service
     run systemd-tmpfiles --create /etc/tmpfiles.d/calcscreen.conf
     run udevadm control --reload
     ok "dockd enabled (starts on the next boot)"
@@ -870,6 +876,7 @@ do_uninstall() {
 
     step "Services"
     run systemctl disable dockd.service 2>/dev/null || true
+    run systemctl disable dock-update.service 2>/dev/null || true
     run systemctl unmask getty@tty1.service autovt@tty1.service
     local u
     if [[ -f $CS_ETC/masked-units ]]; then
@@ -883,13 +890,15 @@ do_uninstall() {
     done
 
     step "Files"
-    remove_path "$UNIT_DIR/dockd.service" "$UNIT_DIR/$DATA_MOUNT_UNIT" "$UNIT_DIR/$NM_CONN_UNIT" \
+    remove_path "$UNIT_DIR/dockd.service" "$UNIT_DIR/dock-update.service" \
+        "$UNIT_DIR/$DATA_MOUNT_UNIT" "$UNIT_DIR/$NM_CONN_UNIT" \
         "$UNIT_DIR/$NM_STATE_UNIT" "$UNIT_DIR/$DATA_DEV_UNIT.d" \
         /etc/udev/rules.d/99-calcscreen.rules /etc/tmpfiles.d/calcscreen.conf \
         /etc/systemd/system.conf.d/calcscreen-watchdog.conf \
         /etc/systemd/journald.conf.d/calcscreen.conf /etc/profile.d/calcscreen.sh \
         /etc/sudoers.d/010_calcscreen-dock "$SBIN_DIR/dock-unlock" "$SBIN_DIR/dock-lock" \
-        "$SBIN_DIR/dock-automount" "$BIN_DIR/dockd" "$CS_ETC"
+        "$SBIN_DIR/dock-automount" "$SBIN_DIR/dock-update" "$BIN_DIR/dockd" \
+        "$BIN_DIR/dockd.prev" "$CS_ETC"
     if [[ -f /etc/motd$BAK ]]; then
         run cp -a /etc/motd$BAK /etc/motd
         remove_path /etc/motd$BAK

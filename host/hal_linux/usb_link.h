@@ -37,6 +37,18 @@ typedef struct usb_link_cb {
 
 typedef struct usb_link usb_link_t;
 
+/* The active calculator connection, for the diagnostics overlay. */
+enum usb_link_mode { USB_LINK_NONE = 0, USB_LINK_FAST, USB_LINK_DUSB };
+typedef struct usb_link_info {
+    int mode;        /* enum usb_link_mode */
+    uint16_t vid, pid;
+    int speed_mbit;  /* negotiated link speed in Mbit/s, 0 if unknown */
+} usb_link_info_t;
+
+/* Fill *out from the currently open device. False (and mode NONE) if neither
+ * a FAST nor a DUSB device is open. */
+bool usb_link_info(const usb_link_t *u, usb_link_info_t *out);
+
 usb_link_t *usb_link_open(const usb_link_cb_t *cb);
 void usb_link_close(usb_link_t *u);
 

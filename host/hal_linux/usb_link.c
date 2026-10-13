@@ -384,6 +384,35 @@ bool usb_link_dusb_present(const usb_link_t *u)
     return u->dusb.present;
 }
 
+bool usb_link_info(const usb_link_t *u, usb_link_info_t *out)
+{
+    libusb_device_handle *h = NULL;
+    out->mode = USB_LINK_NONE;
+    out->vid = out->pid = 0;
+    out->speed_mbit = 0;
+    if (u->fast.up && u->fast.h) {
+        out->mode = USB_LINK_FAST;
+        out->vid = DOCK_USB_VID;
+        out->pid = DOCK_USB_PID;
+        h = u->fast.h;
+    } else if (u->dusb.up && u->dusb.h) {
+        out->mode = USB_LINK_DUSB;
+        out->vid = DOCK_DUSB_VID;
+        out->pid = DOCK_DUSB_PID_84PCE;
+        h = u->dusb.h;
+    } else {
+        return false;
+    }
+    switch (libusb_get_device_speed(libusb_get_device(h))) {
+    case LIBUSB_SPEED_LOW: out->speed_mbit = 1; break;
+    case LIBUSB_SPEED_FULL: out->speed_mbit = 12; break;
+    case LIBUSB_SPEED_HIGH: out->speed_mbit = 480; break;
+    case LIBUSB_SPEED_SUPER: out->speed_mbit = 5000; break;
+    default: out->speed_mbit = 0; break;
+    }
+    return true;
+}
+
 void usb_link_set_dusb_allowed(usb_link_t *u, bool allowed)
 {
     if (u->dusb_allowed == allowed)

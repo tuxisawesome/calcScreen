@@ -49,6 +49,23 @@ flash, which this project deliberately does **not** do. Instead:
   runs. Nothing is installed; running the program (e.g. through arTIfiCE) is
   enough, and quitting it hands the USB port back to TI-OS.
 
+## Diagnostics overlay
+
+A Steam-style **performance overlay** (`host/dockd/overlay.c`) can be stamped
+into the top-left of the mirrored calculator screen. Each loop iteration, when
+enabled and the mirror is shown, it builds a `dock_canvas_t` over the mirror
+buffer, draws a compact dark panel with `core/dock_ui` primitives and damages
+just that rectangle; toggling it off forces a full repaint of the covered
+region (FAST asks the calculator for a refresh, DUSB re-damages the mirror). An
+`overlay_timeout_ms()` is folded into the main `poll()` timeout so the figures
+stay live even when the picture is static. It has three independently toggleable
+groups — FPS/throughput (deltas of the frame/byte counters), connection details
+(`usb_link_info()` vid/pid + speed, join state, resync/bad/request counts) and
+system stats (`host/hal_linux/sysstat.c` reads `/proc` and `/sys`). The two
+toggles and their bitmask persist in `dock_settings` (v2). No new global mutable
+state is added to `core/`; all overlay state lives in `overlay_t` inside the
+Linux `dockd_t`. See [`UPDATE.md`](UPDATE.md) for the USB updater.
+
 ## Portability
 
 Everything shared lives in `core/` and is strict C99 with no malloc, no global

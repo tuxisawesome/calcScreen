@@ -15,11 +15,13 @@
 #include "dusb_session.h"
 #include "input_evdev.h"
 #include "net.h"
+#include "overlay.h"
 #include "sdnotify.h"
 #include "settings_store.h"
 #include "settings_ui.h"
 #include "storage.h"
 #include "unix_link.h"
+#include "update.h"
 #include "usb_link.h"
 
 enum dockd_mode {
@@ -45,6 +47,8 @@ typedef struct dockd_opts {
     const char *input_dir;
     const char *usb_sysfs;
     long once_frames;
+    bool perf_overlay; /* --perf-overlay: force the diagnostics overlay on */
+    int perf_sections; /* --perf-sections N: force section bitmask (-1 unset) */
 } dockd_opts_t;
 
 typedef struct dockd {
@@ -81,6 +85,20 @@ typedef struct dockd {
     pid_t shell_pid;
     pid_t reboot_pid;
 
+    overlay_t ovl;
+
+    /* USB update: the applier child (pi/dock-update) and its reported
+     * progress, shown on SCR_UPDATE_PROGRESS. */
+    pid_t update_pid;
+    int update_fd;            /* child stdout pipe, or 0 when none */
+    char update_line[160];    /* partial stdout line being assembled */
+    size_t update_line_len;
+    int update_pct;           /* 0..100 */
+    char update_step[48];     /* current step label */
+
+    /* One-shot result banner from a finished update (read once at startup). */
+    char update_result[128];
+
     long frames;
     bool quit;
 } dockd_t;
@@ -91,6 +109,9 @@ void dockd_redraw(dockd_t *d);
 void dockd_close_settings(dockd_t *d);
 void dockd_request_shell(dockd_t *d);
 void dockd_request_reboot(dockd_t *d);
+/* Spawn the privileged applier (pi/dock-update stage ...) as a child whose
+ * stdout is polled in the loop. Returns false if it could not be started. */
+bool dockd_start_update(dockd_t *d, const update_pkg_t *pkg);
 /* True when calculator programs may use the network. */
 bool dockd_net_enabled(const dockd_t *d);
 

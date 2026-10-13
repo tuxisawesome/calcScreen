@@ -19,16 +19,20 @@ CORE_CFLAGS = $(CFLAGS) -Wconversion -Wno-sign-conversion
 LDFLAGS ?=
 
 CORE_DIR = ../core
+DOCKD_DIR = ../host/dockd
 BUILD    = build
 OUT      = out
 
 CORE_SRCS = $(wildcard $(CORE_DIR)/*.c)
 CORE_HDRS = $(wildcard $(CORE_DIR)/*.h)
 TEST_SRCS = test_main.c test_proto.c test_screen.c test_devhost.c \
-            test_sha256.c test_settings.c test_keymap.c test_dusb.c test_ui.c
+            test_sha256.c test_settings.c test_keymap.c test_dusb.c test_ui.c \
+            test_update.c
 
 CORE_OBJS = $(patsubst $(CORE_DIR)/%.c,$(BUILD)/core_%.o,$(CORE_SRCS))
 TEST_OBJS = $(patsubst %.c,$(BUILD)/%.o,$(TEST_SRCS))
+# Host objects exercised by the tests (dependency-light host code only).
+HOST_OBJS = $(BUILD)/host_update.o
 BIN       = $(BUILD)/run_tests
 
 .PHONY: all test check portability clean
@@ -40,11 +44,14 @@ test: $(BIN) | $(OUT)
 
 check: test portability
 
-$(BIN): $(CORE_OBJS) $(TEST_OBJS)
+$(BIN): $(CORE_OBJS) $(HOST_OBJS) $(TEST_OBJS)
 	$(CC) $(CFLAGS) $(SAN) -o $@ $^ $(LDFLAGS)
 
 $(BUILD)/core_%.o: $(CORE_DIR)/%.c $(CORE_HDRS) | $(BUILD)
 	$(CC) $(CORE_CFLAGS) $(SAN) -c -o $@ $<
+
+$(BUILD)/host_%.o: $(DOCKD_DIR)/%.c $(DOCKD_DIR)/%.h $(CORE_HDRS) | $(BUILD)
+	$(CC) $(CFLAGS) $(SAN) -I$(CORE_DIR) -c -o $@ $<
 
 $(BUILD)/%.o: %.c test.h $(CORE_HDRS) | $(BUILD)
 	$(CC) $(CFLAGS) $(SAN) -c -o $@ $<

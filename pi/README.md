@@ -243,6 +243,34 @@ Notes:
   `sudo dock-lock`.
 * `sudo rpi-eeprom-update -a` updates the bootloader EEPROM while the system is unlocked.
 
+### Updating from a USB stick
+
+No computer or SSH needed — the dock rebuilds itself from a source bundle on a
+FAT32 stick:
+
+1. Format a USB stick as **FAT32**.
+2. Copy both published files from the repo's `dist/` to the **root** of the
+   stick: `calcscreen-update.tar.gz` and `calcscreen-update.manifest`.
+3. Plug the stick into the dock, open **Settings** (Ctrl+Alt+S; log in if an
+   admin password is set) and choose **Update from USB**.
+4. The dock verifies the file's SHA-256, shows the found version, and on
+   confirmation installs it **with a progress bar** and reboots.
+
+Trust is **integrity only** (the SHA-256 in the manifest): the update is already
+gated by the admin password and physical access, so it is not separately signed.
+
+Because the root filesystem is a read-only overlay, applying a new binary needs
+the overlay briefly disabled, which costs a couple of **automatic reboots**
+(stage → unlock → build+install → re-lock). Each step shows its progress on the
+**monitor** (the boot-time applier draws the bar on `tty1`), so leave the dock
+powered until it returns to the normal screen — it is power-loss safe and will
+resume if interrupted. If the overlay is disabled (`install.sh --no-overlay`),
+the whole update runs in one go with the bar shown in the dock UI. After the
+final reboot the dock shows a one-time "Updated to vX" (or failure) banner.
+
+See [`docs/UPDATE.md`](../docs/UPDATE.md) for the package format and the phase
+state machine.
+
 ## 8. Day-to-day
 
 * **Dock shell:**
@@ -256,6 +284,14 @@ Notes:
   * To turn mDNS back on, unlock and run `sudo systemctl unmask --now avahi-daemon`.
 * **Logs:** `journalctl -u dockd -b` for the daemon, `journalctl -t dock-automount -b`
   for the USB drives.
+* **Diagnostics / performance overlay:** open the settings page and choose
+  **Diagnostics**. Toggle the Steam-style **performance overlay** (drawn in the
+  top-left of the mirrored calculator screen) on or off, and independently
+  toggle its three groups: **FPS & throughput**, **connection details** (calc
+  id, driver, USB vid/pid, join state, resync/bad/request counts) and **system
+  stats** (CPU, temperature, memory, uptime, dockd version). The same live
+  figures are shown read-only on the Diagnostics page itself. The overlay state
+  is persisted, so it survives reboots.
 
 ## Troubleshooting
 

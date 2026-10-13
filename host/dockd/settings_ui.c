@@ -34,6 +34,10 @@ enum screen {
     SCR_PW_NEW1,
     SCR_PW_NEW2,
     SCR_CONFIRM_REBOOT,
+    SCR_UPDATE_SCAN,
+    SCR_UPDATE_CONFIRM,
+    SCR_UPDATE_PROGRESS,
+    SCR_DIAG,
     SCR_MESSAGE
 };
 
@@ -49,8 +53,19 @@ enum item {
     IT_PASSWORD,
     IT_SHELL,
     IT_REBOOT,
+    IT_UPDATE,
+    IT_DIAG,
     IT_CLOSE,
     IT_COUNT
+};
+
+/* Diagnostics sub-menu rows (SCR_DIAG). */
+enum diag_row {
+    DIAG_OVERLAY,
+    DIAG_FPS,
+    DIAG_CONN,
+    DIAG_SYS,
+    DIAG_COUNT
 };
 
 static void wipe(char *p, size_t n)
@@ -89,6 +104,11 @@ static void prompt(settings_ui_t *u, int screen)
 {
     wipe(u->text, sizeof u->text);
     go(u, screen);
+}
+
+void settings_ui_message(settings_ui_t *u, const char *title, const char *body)
+{
+    message(u, title, body, SCR_MENU);
 }
 
 void settings_ui_open(settings_ui_t *u)
@@ -163,6 +183,25 @@ static void change_volume(dockd_t *d, int delta)
     }
 }
 
+/* Scan the USB drives for an update, verify it and move to confirm, or show a
+ * message. Runs synchronously (local-filesystem reads only). */
+static void start_update_scan(settings_ui_t *u)
+{
+    dockd_t *d = u->d;
+    go(u, SCR_UPDATE_SCAN);
+    if (!update_scan(d->opt.drives, &u->upkg)) {
+        message(u, "No update found",
+                "Put calcscreen-update.tar.gz\nand .manifest on a FAT32\nUSB stick.",
+                SCR_MENU);
+        return;
+    }
+    if (update_verify(&u->upkg) != DOCK_OK) {
+        message(u, "Update", "Update file is corrupt.", SCR_MENU);
+        return;
+    }
+    go(u, SCR_UPDATE_CONFIRM);
+}
+
 static void activate(settings_ui_t *u, int item, int dir)
 {
     dockd_t *d = u->d;
@@ -203,6 +242,13 @@ static void activate(settings_ui_t *u, int item, int dir)
         break;
     case IT_REBOOT:
         go(u, SCR_CONFIRM_REBOOT);
+        break;
+    case IT_UPDATE:
+        start_update_scan(u);
+        break;
+    case IT_DIAG:
+        u->sel = 0;
+        go(u, SCR_DIAG);
         break;
     case IT_CLOSE:
         dockd_close_settings(d);
@@ -353,6 +399,70 @@ static void new_password_key(settings_ui_t *u, uint8_t usage, uint8_t ascii)
     settings_ui_wipe(u);
 }
 
+/* Toggle the diagnostics row under the cursor. */
+static void diag_activate(settings_ui_t *u)
+{
+    dockd_t *d = u->d;
+    switch (u->sel) {
+    case DIAG_OVERLAY:
+        d->s.perf_overlay = !d->s.perf_overlay;
+        break;
+    case DIAG_FPS:
+        d->s.perf_overlay_sections ^= DOCK_OVL_FPS;
+        break;
+    case DIAG_CONN:
+        d->s.perf_overlay_sections ^= DOCK_OVL_CONN;
+        break;
+    case DIAG_SYS:
+        d->s.perf_overlay_sections ^= DOCK_OVL_SYS;
+        break;
+    default:
+        return;
+    }
+    dockd_settings_changed(d);
+}
+
+static void diag_key(settings_ui_t *u, uint8_t usage)
+{
+    switch (usage) {
+    case HID_UP:
+        u->sel = (u->sel + DIAG_COUNT - 1) % DIAG_COUNT;
+        break;
+    case HID_DOWN:
+        u->sel = (u->sel + 1) % DIAG_COUNT;
+        break;
+    case HID_LEFT:
+    case HID_RIGHT:
+    case HID_ENTER:
+    case HID_KP_ENTER:
+        diag_activate(u);
+        break;
+    case HID_ESC:
+        u->sel = IT_DIAG;
+        go(u, SCR_MENU);
+        return;
+    default:
+        return;
+    }
+    dockd_redraw(u->d);
+}
+
+/* Confirm screen: Enter stages the update (reboots when the overlay is on, or
+ * applies live), Esc returns to the menu. */
+static void update_confirm_key(settings_ui_t *u, uint8_t usage)
+{
+    if (usage == HID_ENTER || usage == HID_KP_ENTER) {
+        if (dockd_start_update(u->d, &u->upkg))
+            go(u, SCR_UPDATE_PROGRESS);
+        else
+            message(u, "Update",
+                    "The updater is not installed.\nRun pi/install.sh first.",
+                    SCR_MENU);
+    } else if (usage == HID_ESC) {
+        go(u, SCR_MENU);
+    }
+}
+
 void settings_ui_key(settings_ui_t *u, uint8_t usage, uint8_t mods, uint8_t ascii)
 {
     (void)mods;
@@ -388,6 +498,15 @@ void settings_ui_key(settings_ui_t *u, uint8_t usage, uint8_t mods, uint8_t asci
         else if (usage == HID_ESC)
             go(u, SCR_MENU);
         break;
+    case SCR_UPDATE_SCAN:
+    case SCR_UPDATE_PROGRESS:
+        break; /* busy: ignore keys ("do not remove power") */
+    case SCR_UPDATE_CONFIRM:
+        update_confirm_key(u, usage);
+        break;
+    case SCR_DIAG:
+        diag_key(u, usage);
+        break;
     case SCR_JOIN:
     case SCR_MESSAGE:
         if (usage == HID_ENTER || usage == HID_KP_ENTER || usage == HID_ESC)
@@ -409,7 +528,7 @@ static void render_menu(settings_ui_t *u, const dock_canvas_t *c)
         "Wi-Fi", "Choose Wi-Fi network", "Network API for calc programs",
         "Require join code", "Show join code", "Regenerate join code",
         "Audio output", "Volume", "Change admin password", "Drop to shell",
-        "Reboot", "Close"};
+        "Reboot", "Update from USB", "Diagnostics", "Close"};
     dock_ui_item_t it[IT_COUNT];
     char vol[16], footer[128], ssid[64], ip[48];
     bool up;
@@ -428,6 +547,7 @@ static void render_menu(settings_ui_t *u, const dock_canvas_t *c)
     it[IT_AUDIO_OUT].value = d->s.audio_out == DOCK_AUDIO_JACK ? "< Headphones >" : "< HDMI >";
     it[IT_VOLUME].value = vol;
     it[IT_PASSWORD].value = d->s.admin_set ? "Set" : "None";
+    it[IT_DIAG].value = d->s.perf_overlay ? "Overlay on" : "Overlay off";
 
     net_get_status(d->net, &up, ssid, sizeof ssid, ip, sizeof ip);
     if (up)
@@ -463,6 +583,68 @@ static void render_locked(settings_ui_t *u, const dock_canvas_t *c)
     unsigned left = u->lock_until_ms > now ? (unsigned)((u->lock_until_ms - now + 999) / 1000) : 0;
     snprintf(body, sizeof body, "Too many wrong passwords.\nTry again in %u s.", left);
     dock_ui_screen_message(c, "Settings locked", body);
+}
+
+static void render_update_confirm(settings_ui_t *u, const dock_canvas_t *c)
+{
+    char body[192];
+    int cmp = update_version_cmp(u->upkg.version, DOCKD_VERSION);
+    snprintf(body, sizeof body,
+             "Found v%s (current %s).%s\n\nInstall and reboot?\n\n"
+             "Enter: install   Esc: cancel",
+             u->upkg.version, DOCKD_VERSION,
+             cmp <= 0 ? "\n(same/older - reinstall?)" : "");
+    dock_ui_screen_message(c, "Update from USB", body);
+}
+
+/* The progress bar: a background track with a filled portion, a percentage
+ * and the current step label, driven by the applier's reported percent. */
+static void render_update_progress(settings_ui_t *u, const dock_canvas_t *c)
+{
+    dockd_t *d = u->d;
+    int w = (int)c->w, h = (int)c->h;
+    int bx = 24, bw = w - 48, bh = 18, by = h / 2 - bh / 2;
+    int pct = d->update_pct;
+    char pctbuf[16];
+    if (pct < 0)
+        pct = 0;
+    if (pct > 100)
+        pct = 100;
+    dock_ui_screen_message(c, "Updating", NULL);
+    dock_ui_text_centered(c, by - 40, d->update_step[0] ? d->update_step : "Working...",
+                          DOCK_UI_FG, 1);
+    dock_ui_fill(c, bx, by, bw, bh, DOCK_UI_SEL_BG);
+    dock_ui_fill(c, bx, by, bw * pct / 100, bh, DOCK_UI_ACCENT);
+    snprintf(pctbuf, sizeof pctbuf, "%d%%", pct);
+    dock_ui_text_centered(c, by + bh + 12, pctbuf, DOCK_UI_FG, 2);
+    dock_ui_text_centered(c, h - 28, "Do not remove power", DOCK_UI_WARN, 1);
+}
+
+static void render_diag(settings_ui_t *u, const dock_canvas_t *c)
+{
+    dockd_t *d = u->d;
+    char lines[OVERLAY_MAXLINES][OVERLAY_COL];
+    dock_ui_item_t it[DIAG_COUNT];
+    static const char *const labels[DIAG_COUNT] = {
+        "Performance overlay", "  FPS & throughput", "  Connection details",
+        "  System stats"};
+    uint8_t sec = d->s.perf_overlay_sections;
+    int i, n, y;
+
+    for (i = 0; i < DIAG_COUNT; i++)
+        it[i].label = labels[i];
+    it[DIAG_OVERLAY].value = d->s.perf_overlay ? "On" : "Off";
+    it[DIAG_FPS].value = (sec & DOCK_OVL_FPS) ? "On" : "Off";
+    it[DIAG_CONN].value = (sec & DOCK_OVL_CONN) ? "On" : "Off";
+    it[DIAG_SYS].value = (sec & DOCK_OVL_SYS) ? "On" : "Off";
+    dock_ui_screen_menu(c, "Diagnostics", it, DIAG_COUNT, u->sel,
+                        "Enter/<>: toggle   Esc: back");
+
+    /* Live read-only stats block below the toggles. */
+    n = overlay_lines(d, lines, OVERLAY_MAXLINES);
+    y = 20 + DIAG_COUNT * 14 + 10;
+    for (i = 0; i < n; i++)
+        dock_ui_text(c, 16, y + i * 10, lines[i], DOCK_UI_DIM, 1);
 }
 
 void settings_ui_render(settings_ui_t *u, const dock_canvas_t *c)
@@ -508,6 +690,18 @@ void settings_ui_render(settings_ui_t *u, const dock_canvas_t *c)
     case SCR_CONFIRM_REBOOT:
         dock_ui_screen_message(c, "Reboot", "Reboot the dock now?\n\nEnter: yes   Esc: no");
         break;
+    case SCR_UPDATE_SCAN:
+        dock_ui_screen_message(c, "Update from USB", "Checking USB drives...");
+        break;
+    case SCR_UPDATE_CONFIRM:
+        render_update_confirm(u, c);
+        break;
+    case SCR_UPDATE_PROGRESS:
+        render_update_progress(u, c);
+        break;
+    case SCR_DIAG:
+        render_diag(u, c);
+        break;
     case SCR_MESSAGE:
     default:
         dock_ui_screen_message(c, u->msg_title, u->msg_body);
@@ -546,6 +740,11 @@ bool settings_ui_tick(settings_ui_t *u, uint64_t now_ms)
         else if (r == NET_RESULT_FAIL)
             message(u, "Wi-Fi", "Could not connect.\nCheck the password.", SCR_MENU);
         return r == NET_RESULT_OK || r == NET_RESULT_FAIL;
+    case SCR_DIAG:
+        overlay_update_stats(u->d, now_ms);
+        return true; /* refresh the live stats block */
+    case SCR_UPDATE_PROGRESS:
+        return true; /* keep the bar moving; main.c updates the percent */
     default:
         return false;
     }
@@ -555,9 +754,11 @@ int settings_ui_timeout_ms(const settings_ui_t *u)
 {
     switch (u->screen) {
     case SCR_LOCKED:
+    case SCR_DIAG:
         return 250;
     case SCR_SCANNING:
     case SCR_CONNECTING:
+    case SCR_UPDATE_PROGRESS:
         return 200;
     default:
         return -1;

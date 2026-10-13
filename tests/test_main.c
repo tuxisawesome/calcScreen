@@ -36,6 +36,7 @@ static const struct {
     {"devhost", suite_devhost}, {"sha256", suite_sha256},
     {"settings", suite_settings}, {"keymap", suite_keymap},
     {"dusb", suite_dusb},       {"ui", suite_ui},
+    {"update", suite_update},
 };
 
 int main(int argc, char **argv)

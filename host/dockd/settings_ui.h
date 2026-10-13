@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include "dock_ui.h"
+#include "update.h"
 
 struct dockd;
 
@@ -28,6 +29,7 @@ typedef struct settings_ui {
     int msg_return;            /* screen after the message */
     char ssid[33];             /* network being joined */
     uint64_t last_draw_s;      /* countdown redraws */
+    update_pkg_t upkg;         /* the update found on a USB drive */
 } settings_ui_t;
 
 void settings_ui_init(settings_ui_t *u, struct dockd *d);
@@ -41,5 +43,9 @@ bool settings_ui_tick(settings_ui_t *u, uint64_t now_ms);
 int settings_ui_timeout_ms(const settings_ui_t *u);
 /* Forget typed secrets (called when the page closes). */
 void settings_ui_wipe(settings_ui_t *u);
+
+/* Show a one-screen message, returning to the given screen on a key press
+ * (main.c uses this for update staging/result transitions). */
+void settings_ui_message(settings_ui_t *u, const char *title, const char *body);
 
 #endif /* DOCKD_SETTINGS_UI_H */

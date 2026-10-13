@@ -1,0 +1,33 @@
+# dock-update.service - resume a staged calcScreen USB update at boot.
+#
+# Installed to /etc/systemd/system/ by pi/install.sh and enabled. It runs
+# before dockd so a pending update (overlay disabled on the previous boot) is
+# built and installed while the monitor shows the progress bar, then reboots.
+# When nothing is staged `dock-update resume` exits 0 immediately: a no-op.
+
+[Unit]
+Description=calcScreen USB update (resume)
+DefaultDependencies=no
+# Needs the writable settings partition (the staged package + phase live there)
+# and the local filesystems; must finish before the dock daemon starts.
+Requires=local-fs.target
+After=local-fs.target var-lib-dockd.mount
+Before=dockd.service
+Conflicts=getty@tty1.service autovt@tty1.service
+After=getty@tty1.service autovt@tty1.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+ExecStart=/usr/local/sbin/dock-update resume --state /var/lib/dockd
+# Show the progress bar on the monitor during the (dockd-less) boot-time build.
+TTYPath=/dev/tty1
+TTYReset=yes
+StandardInput=tty-force
+StandardOutput=tty
+StandardError=journal
+# A source build can take a few minutes on a Pi; never let systemd kill it.
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

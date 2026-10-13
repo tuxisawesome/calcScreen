@@ -45,8 +45,8 @@ CORE_DOCKD := dock_proto dock_screen dock_host dock_keymap dock_settings \
               sha256 dock_ui dusb
 CORE_SIM   := dock_proto dock_screen dock_dev dock_api
 HAL_LINUX  := util display display_drm input_evdev usb_link unix_link storage \
-              audio_alsa usb_devices net settings_store sdnotify
-DOCKD_SRC  := main hhal settings_ui dusb_session
+              audio_alsa usb_devices net settings_store sdnotify sysstat
+DOCKD_SRC  := main hhal settings_ui dusb_session overlay update
 SIM_SRC    := sim_main sim_hal
 
 DOCKD_OBJS := $(CORE_DOCKD:%=$(OBJ)/core/%.o) $(HAL_LINUX:%=$(OBJ)/hal_linux/%.o) \
@@ -54,7 +54,7 @@ DOCKD_OBJS := $(CORE_DOCKD:%=$(OBJ)/core/%.o) $(HAL_LINUX:%=$(OBJ)/hal_linux/%.o
 SIM_OBJS   := $(CORE_SIM:%=$(OBJ)/core/%.o) $(OBJ)/hal_linux/util.o \
               $(SIM_SRC:%=$(OBJ)/hal_sim/%.o)
 
-.PHONY: all clean install uninstall e2e
+.PHONY: all clean install uninstall e2e overlay
 all: $(BUILD)/dockd $(BUILD)/dock-sim
 
 $(BUILD)/dockd: $(DOCKD_OBJS)
@@ -89,6 +89,9 @@ uninstall:
 
 e2e: all
 	$(ROOT)/host/e2e_test.sh
+
+overlay: all
+	$(ROOT)/host/overlay_test.sh
 
 clean:
 	rm -rf $(OBJ) $(BUILD)/dockd $(BUILD)/dock-sim

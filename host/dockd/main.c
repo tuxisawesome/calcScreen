@@ -21,6 +21,7 @@
 
 #include <errno.h>
 #include <getopt.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,7 +64,8 @@ static void usage(FILE *f)
           "  --wifi-if IFACE        Wi-Fi interface (wlan0)\n"
           "  --input-dir DIR        evdev directory (/dev/input)\n"
           "  --usb-sysfs DIR        USB device list (/sys/bus/usb/devices)\n"
-          "  --once-frames N        exit after N received frames (tests)\n",
+          "  --once-frames N        exit after N received frames (tests)\n"
+          "  --perf-overlay         force the diagnostics overlay on (debug)\n",
           f);
 }
 
@@ -72,7 +74,7 @@ static bool parse_opts(int argc, char **argv, dockd_opts_t *o)
     enum {
         O_DRIVES = 256, O_STATE, O_DISPLAY, O_AUDIO, O_AUDIO_DEV, O_AUDIO_HDMI,
         O_AUDIO_JACK, O_TRANSPORT, O_SHELL, O_NMCLI, O_WIFI_IF, O_INPUT, O_USB_SYSFS,
-        O_ONCE
+        O_ONCE, O_PERF_OVERLAY, O_PERF_SECTIONS
     };
     static const struct option lo[] = {
         {"verbose", no_argument, NULL, 'v'},
@@ -92,6 +94,8 @@ static bool parse_opts(int argc, char **argv, dockd_opts_t *o)
         {"input-dir", required_argument, NULL, O_INPUT},
         {"usb-sysfs", required_argument, NULL, O_USB_SYSFS},
         {"once-frames", required_argument, NULL, O_ONCE},
+        {"perf-overlay", no_argument, NULL, O_PERF_OVERLAY},
+        {"perf-sections", required_argument, NULL, O_PERF_SECTIONS},
         {NULL, 0, NULL, 0}};
     int c;
 
@@ -109,6 +113,8 @@ static bool parse_opts(int argc, char **argv, dockd_opts_t *o)
     o->input_dir = "/dev/input";
     o->usb_sysfs = "/sys/bus/usb/devices";
     o->once_frames = 0;
+    o->perf_overlay = false;
+    o->perf_sections = -1;
 
     while ((c = getopt_long(argc, argv, "vhV", lo, NULL)) != -1) {
         switch (c) {
@@ -129,6 +135,8 @@ static bool parse_opts(int argc, char **argv, dockd_opts_t *o)
         case O_INPUT: o->input_dir = optarg; break;
         case O_USB_SYSFS: o->usb_sysfs = optarg; break;
         case O_ONCE: o->once_frames = strtol(optarg, NULL, 10); break;
+        case O_PERF_OVERLAY: o->perf_overlay = true; break;
+        case O_PERF_SECTIONS: o->perf_sections = (int)strtol(optarg, NULL, 0); break;
         default: usage(stderr); return false;
         }
     }
@@ -168,6 +176,7 @@ void dockd_settings_changed(dockd_t *d)
         usb_link_set_dusb_allowed(d->usb, !d->s.join_required);
     if (!dockd_net_enabled(d))
         net_http_end_all(d->net);
+    overlay_settings_changed(d);
     dockd_redraw(d);
 }
 
@@ -198,6 +207,149 @@ void dockd_request_reboot(dockd_t *d)
     d->reboot_pid = spawn_argv(argv, NULL, false);
     if (d->reboot_pid < 0)
         loge("cannot run systemctl reboot: %s", strerror(errno));
+}
+
+/* ------------------------------------------------------------------ */
+/* USB update applier (pi/dock-update, run as a child)                 */
+
+/* Installed location, or pi/dock-update relative to the dev-tree binary. */
+static const char *updater_path(void)
+{
+    static char buf[PATH_MAX];
+    ssize_t n;
+    char *p;
+    if (access("/usr/local/sbin/dock-update", X_OK) == 0)
+        return "/usr/local/sbin/dock-update";
+    n = readlink("/proc/self/exe", buf, sizeof buf - 1);
+    if (n <= 0)
+        return NULL;
+    buf[n] = '\0';
+    if ((p = strrchr(buf, '/'))) /* strip /dockd */
+        *p = '\0';
+    if ((p = strrchr(buf, '/'))) /* strip /build */
+        *p = '\0';
+    if (!str_copy(buf + strlen(buf), sizeof buf - strlen(buf), "/pi/dock-update"))
+        return NULL;
+    return access(buf, X_OK) == 0 ? buf : NULL;
+}
+
+bool dockd_start_update(dockd_t *d, const update_pkg_t *pkg)
+{
+    const char *prog = updater_path();
+    char *argv[9];
+    int fd = -1, i = 0;
+    if (d->update_pid > 0)
+        return true; /* already running */
+    if (!prog)
+        return false;
+    argv[i++] = (char *)prog;
+    argv[i++] = (char *)"stage";
+    argv[i++] = (char *)"--pkg";
+    argv[i++] = (char *)pkg->tar_path;
+    argv[i++] = (char *)"--manifest";
+    argv[i++] = (char *)pkg->manifest_path;
+    argv[i++] = (char *)"--state";
+    argv[i++] = (char *)d->opt.state;
+    argv[i] = NULL;
+    d->update_pid = spawn_argv(argv, &fd, false);
+    if (d->update_pid < 0) {
+        d->update_pid = 0;
+        return false;
+    }
+    d->update_fd = fd;
+    d->update_line_len = 0;
+    d->update_pct = 0;
+    str_copy(d->update_step, sizeof d->update_step, "Starting...");
+    return true;
+}
+
+/* Act on one line of the applier's stdout. */
+static void update_line(dockd_t *d, const char *line)
+{
+    if (strncmp(line, "PROGRESS ", 9) == 0) {
+        int pct = 0;
+        char label[48];
+        label[0] = '\0';
+        if (sscanf(line + 9, "%d %47[^\n]", &pct, label) >= 1) {
+            d->update_pct = pct;
+            if (label[0])
+                str_copy(d->update_step, sizeof d->update_step, label);
+            dockd_redraw(d);
+        }
+    } else if (strcmp(line, "STAGED-REBOOT") == 0 ||
+               strcmp(line, "UNLOCK-REBOOT") == 0) {
+        settings_ui_message(&d->sui, "Update",
+                            "Update staged.\nRebooting to apply...");
+        dockd_request_reboot(d);
+    } else if (strncmp(line, "RESULT ok", 9) == 0) {
+        char ver[40] = "", body[96];
+        sscanf(line + 9, "%39s", ver);
+        snprintf(body, sizeof body, "Updated to v%s.\nRebooting...", ver);
+        settings_ui_message(&d->sui, "Update complete", body);
+        dockd_request_reboot(d);
+    } else if (strncmp(line, "RESULT fail", 11) == 0) {
+        const char *r = line + 11;
+        char body[128];
+        while (*r == ' ' || *r == ':')
+            r++;
+        snprintf(body, sizeof body, "Update failed:\n%.100s", r[0] ? r : "unknown");
+        settings_ui_message(&d->sui, "Update failed", body);
+    }
+}
+
+/* Drain the applier's stdout (non-blocking); assemble and dispatch lines. */
+static void update_read(dockd_t *d)
+{
+    char buf[256];
+    if (d->update_fd <= 0)
+        return;
+    for (;;) {
+        ssize_t n = read(d->update_fd, buf, sizeof buf);
+        int i;
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            break; /* EAGAIN: nothing more for now */
+        }
+        if (n == 0) { /* EOF: the child closed its stdout */
+            close(d->update_fd);
+            d->update_fd = 0;
+            break;
+        }
+        for (i = 0; i < n; i++) {
+            char ch = buf[i];
+            if (ch == '\n') {
+                d->update_line[d->update_line_len] = '\0';
+                if (d->update_line_len)
+                    update_line(d, d->update_line);
+                d->update_line_len = 0;
+            } else if (d->update_line_len + 1 < sizeof d->update_line) {
+                d->update_line[d->update_line_len++] = ch;
+            }
+        }
+    }
+}
+
+/* On startup: surface the result a finished update left behind, once. */
+static void read_update_result(dockd_t *d)
+{
+    char path[PATH_MAX], buf[128];
+    snprintf(path, sizeof path, "%s/update/result", d->opt.state);
+    if (!read_text_file(path, buf, sizeof buf))
+        return;
+    if (strncmp(buf, "ok", 2) == 0) {
+        const char *v = buf + 2;
+        while (*v == ' ')
+            v++;
+        snprintf(d->update_result, sizeof d->update_result, "Updated to v%.100s", v);
+    } else if (strncmp(buf, "fail", 4) == 0) {
+        const char *r = buf + 4;
+        while (*r == ' ' || *r == ':')
+            r++;
+        snprintf(d->update_result, sizeof d->update_result, "Update failed:\n%.100s",
+                 r[0] ? r : "unknown");
+    }
+    unlink(path);
 }
 
 /* ------------------------------------------------------------------ */
@@ -257,6 +409,11 @@ static void on_key(void *user, uint8_t usage, uint8_t mods, int value)
 
     if (d->shell_active)
         return;
+    if (value == INPUT_DOWN && d->update_result[0] && !d->settings_open) {
+        d->update_result[0] = '\0'; /* dismiss the post-update banner */
+        dockd_redraw(d);
+        return;
+    }
     if (press) {
         switch (dock_keymap_hotkey(usage, mods)) {
         case DOCK_HOTKEY_SETTINGS:
@@ -299,6 +456,11 @@ static void render_ui(dockd_t *d)
 {
     const dock_canvas_t *c = &d->ui;
     char body[160];
+    if (!d->settings_open && d->update_result[0]) {
+        dock_ui_screen_message(c, "Update", d->update_result);
+        display_damage(d->disp, DISPLAY_UI, 0, DISPLAY_H);
+        return;
+    }
     if (d->settings_open) {
         settings_ui_render(&d->sui, c);
     } else {
@@ -329,7 +491,7 @@ static void render_ui(dockd_t *d)
 
 static int wanted_view(const dockd_t *d)
 {
-    if (d->settings_open)
+    if (d->settings_open || d->update_result[0])
         return DISPLAY_UI;
     if (d->mode == MODE_FAST || (d->mode == MODE_DUSB && d->dusb.have_frame))
         return DISPLAY_MIRROR;
@@ -442,6 +604,14 @@ static void reap_children(dockd_t *d)
     }
     if (d->reboot_pid > 0 && waitpid(d->reboot_pid, &st, WNOHANG) == d->reboot_pid)
         d->reboot_pid = 0;
+    if (d->update_pid > 0 && waitpid(d->update_pid, &st, WNOHANG) == d->update_pid) {
+        d->update_pid = 0;
+        update_read(d); /* drain any final output */
+        if (d->update_fd > 0) {
+            close(d->update_fd);
+            d->update_fd = 0;
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -463,6 +633,7 @@ static int loop_timeout(dockd_t *d, uint64_t now)
     tmin(&t, sdnotify_timeout_ms(&d->sd, now));
     if (d->settings_open)
         tmin(&t, settings_ui_timeout_ms(&d->sui));
+    tmin(&t, overlay_timeout_ms(d));
     if (d->shell_active || d->reboot_pid > 0)
         tmin(&t, 200);
     if (d->mode == MODE_DUSB && !d->settings_open && !d->shell_active)
@@ -489,6 +660,12 @@ static void run(dockd_t *d, bool display_fallback)
             n += ux_n = unix_link_pollfds(d->ux, pfd + n, MAX_PFD - n);
         net_0 = n;
         n += net_n = net_pollfds(d->net, pfd + n, MAX_PFD - n);
+        if (d->update_fd > 0 && n < MAX_PFD) {
+            pfd[n].fd = d->update_fd;
+            pfd[n].events = POLLIN;
+            pfd[n].revents = 0;
+            n++;
+        }
 
         if (poll(pfd, (nfds_t)n, loop_timeout(d, now)) < 0 && errno != EINTR) {
             loge("poll: %s", strerror(errno));
@@ -516,6 +693,8 @@ static void run(dockd_t *d, bool display_fallback)
         }
         if (d->settings_open && settings_ui_tick(&d->sui, now))
             dockd_redraw(d);
+        if (d->update_fd > 0)
+            update_read(d);
         if (d->shell_requested)
             start_shell(d);
         reap_children(d);
@@ -530,6 +709,8 @@ static void run(dockd_t *d, bool display_fallback)
             if (wanted_view(d) != display_shown(d->disp))
                 display_show(d->disp, wanted_view(d));
         }
+        if (!d->shell_active && wanted_view(d) == DISPLAY_MIRROR)
+            overlay_render(d);
         display_flush(d->disp);
         if (d->usb)
             usb_link_flush(d->usb);
@@ -574,6 +755,8 @@ static void install_signals(void)
 
 static void teardown(dockd_t *d)
 {
+    if (d->update_fd > 0)
+        close(d->update_fd);
     if (d->in)
         input_close(d->in);
     if (d->usb)
@@ -609,6 +792,15 @@ int main(int argc, char **argv)
     if (!settings_store_init(&d->store, d->opt.state))
         loge("state directory unusable; settings will not persist");
     settings_store_load(&d->store, &d->s, &d->seq);
+    if (d->opt.perf_overlay) { /* debug flag: force the overlay on */
+        d->s.perf_overlay = 1;
+        if (d->s.perf_overlay_sections == 0)
+            d->s.perf_overlay_sections = DOCK_OVL_ALL;
+    }
+    if (d->opt.perf_sections >= 0)
+        d->s.perf_overlay_sections = (uint8_t)d->opt.perf_sections;
+    read_update_result(d);
+    d->ovl.prev_on = d->s.perf_overlay != 0;
 
     d->disp = display_open(d->opt.display);
     if (!d->disp && strncmp(d->opt.display, "drm", 3) == 0) {

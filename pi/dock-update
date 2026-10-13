@@ -1,0 +1,374 @@
+#!/bin/bash
+# dock-update - apply a calcScreen USB update on the Pi (on-device source build).
+#
+# The update is a source bundle (calcscreen-update.tar.gz) plus a manifest
+# (calcscreen-update.manifest). Trust is SHA-256 integrity only: it is already
+# gated by the admin password and physical access. Because the root filesystem
+# is a read-only RAM overlay, installing a new binary needs the overlay briefly
+# disabled, which costs reboots; this applier is RESUMABLE across them via a
+# phase file, so a power cut mid-update continues where it left off.
+#
+#   dock-update stage --pkg T --manifest M --state DIR
+#       Verify, copy into DIR/update/pending, write phase=staged. If the overlay
+#       is active, print STAGED-REBOOT and exit (the boot service resumes after
+#       a reboot). If the overlay is inactive (root writable), apply now.
+#   dock-update resume --state DIR
+#       Run at boot by dock-update.service. Continue from the phase file:
+#       staged+overlay -> unlock + reboot; unlocked/building -> build, install,
+#       relock, write result, reboot. A true no-op when nothing is pending.
+#   dock-update overlay-status
+#       Print 'active' (changes are volatile / root is an overlay) or 'inactive'.
+#
+# Progress: PROGRESS <pct> <label> lines and the final RESULT/REBOOT markers go
+# to stdout (dockd parses them); a text progress bar is drawn to the console so
+# it is visible on the monitor during the boot-time build.
+#
+# Options: --dry-run (don't reboot/unlock/lock/install for real; print instead).
+# Test hooks (env): DOCK_MAKE_CMD, DOCK_UNLOCK_CMD, DOCK_LOCK_CMD,
+#   DOCK_REBOOT_CMD, DOCK_OVERLAY_FORCE (active|inactive), DOCK_DESTDIR,
+#   DOCK_PREFIX, DOCK_SBIN_DIR, DOCK_UNIT_DIR, DOCK_UDEV_DIR, DOCK_BIN_DIR,
+#   DOCK_BUILD_TIMEOUT_S.
+set -euo pipefail
+export LC_ALL=C
+
+PKG_NAME=calcscreen-update.tar.gz
+MANIFEST_NAME=calcscreen-update.manifest
+
+# ---------------------------------------------------------------------------
+# configuration (test-overridable)
+# ---------------------------------------------------------------------------
+DRY_RUN=0
+MAKE_CMD=${DOCK_MAKE_CMD:-make}
+UNLOCK_CMD=${DOCK_UNLOCK_CMD:-dock-unlock}
+LOCK_CMD=${DOCK_LOCK_CMD:-dock-lock}
+REBOOT_CMD=${DOCK_REBOOT_CMD:-systemctl reboot}
+PREFIX=${DOCK_PREFIX:-/usr/local}
+DESTDIR=${DOCK_DESTDIR:-}
+SBIN_DIR=${DOCK_SBIN_DIR:-$PREFIX/sbin}
+UNIT_DIR=${DOCK_UNIT_DIR:-/etc/systemd/system}
+UDEV_DIR=${DOCK_UDEV_DIR:-/etc/udev/rules.d}
+BIN_DIR=${DOCK_BIN_DIR:-$PREFIX/bin}
+BUILD_TIMEOUT_S=${DOCK_BUILD_TIMEOUT_S:-1800}
+
+log()  { printf 'dock-update: %s\n' "$*" >&2; }
+die()  { log "error: $*"; exit 1; }
+emit() { printf '%s\n' "$*"; }   # a marker line dockd consumes
+
+# run CMD...: execute, or only print it with --dry-run.
+run() {
+    if ((DRY_RUN)); then
+        { printf '    [dry-run]'; printf ' %q' "$@"; echo; } >&2
+    else
+        "$@"
+    fi
+}
+
+# Where the progress bar is drawn (DOCK_CONSOLE for tests, else the monitor's
+# tty, else stderr).
+console_fd() {
+    if [[ -n ${DOCK_CONSOLE:-} ]]; then echo "$DOCK_CONSOLE"
+    elif [[ -w /dev/tty ]]; then echo /dev/tty
+    else echo /dev/stderr; fi
+}
+CONSOLE=$(console_fd)
+
+# progress PCT LABEL: a marker for dockd + an in-place bar on the console.
+progress() {
+    local pct=$1 label=${2:-} i bar=""
+    ((pct < 0)) && pct=0
+    ((pct > 100)) && pct=100
+    emit "PROGRESS $pct $label"
+    for ((i = 0; i < 20; i++)); do
+        if ((i * 5 < pct)); then bar+='#'; else bar+='-'; fi
+    done
+    printf '\r  [%s] %3d%%  %-24s' "$bar" "$pct" "$label" >> "$CONSOLE" 2>/dev/null || true
+    if ((pct >= 100)); then printf '\n' >> "$CONSOLE" 2>/dev/null || true; fi
+    return 0
+}
+
+now_s() { date +%s; }
+
+# ---------------------------------------------------------------------------
+# overlay / phase helpers
+# ---------------------------------------------------------------------------
+# The read-only root overlay: active means the root filesystem is an overlay
+# (changes live in RAM and vanish at reboot), matching pi/install.sh's check.
+overlay_status() {
+    if [[ -n ${DOCK_OVERLAY_FORCE:-} ]]; then echo "${DOCK_OVERLAY_FORCE}"; return 0; fi
+    if [[ $(findmnt -no FSTYPE / 2>/dev/null) == overlay ]] ||
+       grep -qw 'overlayroot=tmpfs' /proc/cmdline 2>/dev/null; then
+        echo active
+    else
+        echo inactive
+    fi
+}
+
+UPDATE_DIR=""
+PHASE_FILE=""
+PENDING_DIR=""
+WORK_DIR=""
+RESULT_FILE=""
+
+set_dirs() {
+    local state=$1
+    UPDATE_DIR="$state/update"
+    PHASE_FILE="$UPDATE_DIR/phase"
+    PENDING_DIR="$UPDATE_DIR/pending"
+    WORK_DIR="$UPDATE_DIR/work"
+    RESULT_FILE="$UPDATE_DIR/result"
+}
+
+read_phase() { [[ -f $PHASE_FILE ]] && cat -- "$PHASE_FILE" || echo ""; }
+
+# Write the phase atomically and flush to disk (power-safe).
+set_phase() {
+    mkdir -p "$UPDATE_DIR"
+    printf '%s\n' "$1" > "$PHASE_FILE.tmp"
+    sync -- "$PHASE_FILE.tmp" 2>/dev/null || sync
+    mv -f "$PHASE_FILE.tmp" "$PHASE_FILE"
+    sync
+    log "phase=$1"
+}
+
+write_result() {
+    mkdir -p "$UPDATE_DIR"
+    printf '%s\n' "$1" > "$RESULT_FILE"
+    sync
+}
+
+sha_of() { sha256sum "$1" | cut -d' ' -f1; }
+
+manifest_field() { # manifest_field FILE KEY
+    sed -n "s/^$2=//p" "$1" | head -n1 | tr -d '\r'
+}
+
+# ---------------------------------------------------------------------------
+# verify
+# ---------------------------------------------------------------------------
+verify_pkg() { # verify_pkg TARBALL MANIFEST
+    local tar=$1 man=$2 want size got realsize
+    [[ -f $tar ]] || die "tarball not found: $tar"
+    [[ -f $man ]] || die "manifest not found: $man"
+    [[ $(manifest_field "$man" format) == 1 ]] || die "unsupported manifest format"
+    want=$(manifest_field "$man" sha256)
+    size=$(manifest_field "$man" size)
+    [[ $want =~ ^[0-9a-fA-F]{64}$ ]] || die "manifest has no valid sha256"
+    realsize=$(stat -c%s "$tar")
+    if [[ -n $size && $size != "$realsize" ]]; then
+        die "size mismatch (manifest $size, file $realsize)"
+    fi
+    got=$(sha_of "$tar")
+    [[ ${got,,} == "${want,,}" ]] || die "sha256 mismatch"
+    log "verified $tar ($realsize bytes)"
+}
+
+# ---------------------------------------------------------------------------
+# apply (build + install); echoes RESULT, returns 0/1
+# ---------------------------------------------------------------------------
+NEED_RELOCK=0
+BUILT_VER=""
+
+# Count C translation units in the bundle (build progress denominator).
+count_tus() {
+    local n
+    n=$(find "$WORK_DIR/core" "$WORK_DIR/host" -name '*.c' 2>/dev/null | wc -l)
+    ((n > 0)) || n=1
+    echo "$n"
+}
+
+refresh_scripts() {
+    local d
+    # Pi scripts, systemd units and udev rules from the new bundle.
+    for d in dock-update dock-lock dock-unlock dock-automount; do
+        [[ -f $WORK_DIR/pi/$d ]] && run install -D -m 0755 "$WORK_DIR/pi/$d" "$DESTDIR$SBIN_DIR/$d"
+    done
+    for d in dockd.service dock-update.service; do
+        [[ -f $WORK_DIR/pi/$d ]] && run install -D -m 0644 "$WORK_DIR/pi/$d" "$DESTDIR$UNIT_DIR/$d"
+    done
+    [[ -f $WORK_DIR/pi/99-calcscreen.rules ]] &&
+        run install -D -m 0644 "$WORK_DIR/pi/99-calcscreen.rules" "$DESTDIR$UDEV_DIR/99-calcscreen.rules"
+    # Published calculator programs, if the bundle carries them.
+    for d in "$WORK_DIR"/dist/*.8xp "$WORK_DIR"/calc/*/bin/*.8xp; do
+        [[ -f $d ]] && run install -D -m 0644 "$d" "$DESTDIR$BIN_DIR/$(basename "$d")"
+    done
+    run systemctl daemon-reload || true
+    run udevadm control --reload || true
+}
+
+# apply_build: extract, build with a streaming bar, install. Sets BUILT_VER and
+# returns 0, or returns non-zero on failure (caller writes the failure result).
+apply_build() {
+    local total ndone pct mpid start
+    rm -rf "$WORK_DIR"
+    mkdir -p "$WORK_DIR"
+    progress 3 "Extracting"
+    tar -xzf "$PENDING_DIR/$PKG_NAME" -C "$WORK_DIR" || { log "extract failed"; return 1; }
+
+    total=$(count_tus)
+    progress 10 "Building dockd"
+    if ((DRY_RUN)); then
+        log "[dry-run] would run: $MAKE_CMD -C $WORK_DIR/host"
+    fi
+    # Build in the background; poll the object dir to drive the bar.
+    ( $MAKE_CMD -C "$WORK_DIR/host" -j"$(nproc 2>/dev/null || echo 1)" ) \
+        > "$UPDATE_DIR/build.log" 2>&1 &
+    mpid=$!
+    start=$(now_s)
+    while kill -0 "$mpid" 2>/dev/null; do
+        ndone=$(find "$WORK_DIR/build/obj" -name '*.o' 2>/dev/null | wc -l)
+        pct=$((10 + ndone * 75 / total))
+        ((pct > 85)) && pct=85
+        progress "$pct" "Compiling $ndone/$total"
+        if (( $(now_s) - start > BUILD_TIMEOUT_S )); then
+            kill "$mpid" 2>/dev/null || true
+            log "build timed out after ${BUILD_TIMEOUT_S}s"
+            return 1
+        fi
+        sleep 1
+    done
+    if ! wait "$mpid"; then
+        log "build failed (see $UPDATE_DIR/build.log)"
+        return 1
+    fi
+    progress 85 "Installing"
+
+    # Keep the current binary as dockd.prev before overwriting it.
+    if [[ -f $DESTDIR$BIN_DIR/dockd ]]; then
+        run cp -f "$DESTDIR$BIN_DIR/dockd" "$DESTDIR$BIN_DIR/dockd.prev"
+    fi
+    if ! run $MAKE_CMD -C "$WORK_DIR/host" install PREFIX="$PREFIX" DESTDIR="$DESTDIR"; then
+        log "install failed; restoring previous dockd"
+        [[ -f $DESTDIR$BIN_DIR/dockd.prev ]] &&
+            run cp -f "$DESTDIR$BIN_DIR/dockd.prev" "$DESTDIR$BIN_DIR/dockd"
+        return 1
+    fi
+    progress 92 "Refreshing scripts"
+    refresh_scripts
+
+    BUILT_VER=$(cat "$WORK_DIR/VERSION" 2>/dev/null ||
+                manifest_field "$PENDING_DIR/$MANIFEST_NAME" version)
+    return 0
+}
+
+# Run the full apply, handle success/failure, relock, result, reboot.
+finish_apply() {
+    local rc=0
+    set_phase building
+    if apply_build; then
+        progress 95 "Finishing"
+        if ((NEED_RELOCK)); then
+            progress 97 "Re-locking"
+            run $LOCK_CMD || log "warning: re-lock failed"
+        fi
+        set_phase "done"
+        write_result "ok $BUILT_VER"
+        rm -rf "$PENDING_DIR" "$WORK_DIR"
+        progress 100 "Done"
+        emit "RESULT ok $BUILT_VER"
+    else
+        rc=1
+        if ((NEED_RELOCK)); then run $LOCK_CMD || log "warning: re-lock failed"; fi
+        set_phase failed
+        write_result "fail update build/install failed"
+        emit "RESULT fail build/install failed"
+    fi
+    return $rc
+}
+
+# ---------------------------------------------------------------------------
+# subcommands
+# ---------------------------------------------------------------------------
+cmd_stage() {
+    local pkg="" man="" state=""
+    while (($#)); do
+        case $1 in
+            --pkg) pkg=$2; shift 2 ;;
+            --manifest) man=$2; shift 2 ;;
+            --state) state=$2; shift 2 ;;
+            *) die "stage: unknown argument '$1'" ;;
+        esac
+    done
+    [[ -n $pkg && -n $man && -n $state ]] || die "stage needs --pkg --manifest --state"
+    set_dirs "$state"
+    verify_pkg "$pkg" "$man"
+
+    mkdir -p "$PENDING_DIR"
+    cp -f "$pkg" "$PENDING_DIR/$PKG_NAME"
+    cp -f "$man" "$PENDING_DIR/$MANIFEST_NAME"
+    sync
+    set_phase staged
+
+    if [[ $(overlay_status) == active ]]; then
+        log "overlay active: staging for the boot-time applier"
+        emit "STAGED-REBOOT"
+        return 0
+    fi
+    log "overlay inactive: applying now"
+    NEED_RELOCK=0
+    finish_apply
+}
+
+cmd_resume() {
+    local state="" phase
+    while (($#)); do
+        case $1 in
+            --state) state=$2; shift 2 ;;
+            *) die "resume: unknown argument '$1'" ;;
+        esac
+    done
+    [[ -n $state ]] || die "resume needs --state"
+    set_dirs "$state"
+    phase=$(read_phase)
+    case $phase in
+        ""|done|failed)
+            exit 0 ;;                       # nothing pending: a true no-op
+        staged)
+            if [[ $(overlay_status) == active ]]; then
+                progress 5 "Unlocking"
+                run $UNLOCK_CMD || die "could not disable the overlay"
+                set_phase unlocked
+                emit "UNLOCK-REBOOT"
+                run $REBOOT_CMD
+                exit 0
+            fi
+            NEED_RELOCK=0
+            finish_apply || true
+            run $REBOOT_CMD
+            ;;
+        unlocked|building)
+            # Root is writable now (overlay disabled). Apply and re-lock.
+            if [[ $(overlay_status) != active ]]; then NEED_RELOCK=1; fi
+            finish_apply || true
+            run $REBOOT_CMD
+            ;;
+        *)
+            die "unknown phase '$phase'" ;;
+    esac
+}
+
+usage() {
+    sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+main() {
+    [[ $# -ge 1 ]] || { usage; exit 2; }
+    # a --dry-run anywhere
+    local args=() a
+    for a in "$@"; do
+        if [[ $a == --dry-run ]]; then DRY_RUN=1; else args+=("$a"); fi
+    done
+    set -- "${args[@]}"
+    local sub=$1; shift || true
+    case $sub in
+        stage) cmd_stage "$@" ;;
+        resume) cmd_resume "$@" ;;
+        overlay-status) overlay_status ;;
+        -h|--help|help) usage ;;
+        *) die "unknown subcommand '$sub' (stage|resume|overlay-status)" ;;
+    esac
+}
+
+# Sourcing with CALCSCREEN_LIB_ONLY=1 only defines the functions (tests).
+if [[ ${CALCSCREEN_LIB_ONLY:-0} != 1 ]]; then
+    main "$@"
+fi

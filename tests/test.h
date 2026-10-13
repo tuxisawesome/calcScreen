@@ -82,5 +82,6 @@ void suite_settings(void);
 void suite_keymap(void);
 void suite_dusb(void);
 void suite_ui(void);
+void suite_update(void);
 
 #endif
