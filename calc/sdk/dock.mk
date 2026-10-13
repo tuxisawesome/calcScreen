@@ -24,3 +24,9 @@ EXTRA_PREASM_SOURCES += $(DOCK_HAL_DIR)/src/dma_ce.S
 
 CFLAGS   += -I$(DOCK_SDK_DIR) -I$(DOCK_CORE_DIR) -I$(DOCK_HAL_DIR)/include
 CXXFLAGS += -I$(DOCK_SDK_DIR) -I$(DOCK_CORE_DIR) -I$(DOCK_HAL_DIR)/include
+
+# The link-time-optimization step recompiles with $(LTOFLAGS), which defaults to
+# $(CFLAGS). Our -I include paths are meaningless there (no C input), so the
+# compiler warns "argument unused during compilation". Drop them from LTOFLAGS
+# so the build is warning-clean while keeping them for the real compiles.
+LTOFLAGS ?= $(filter-out -I%,$(CFLAGS))

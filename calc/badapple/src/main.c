@@ -11,6 +11,8 @@
  */
 #include <stdint.h>
 #include <string.h>
+#include <time.h>
+#include <keypadc.h>
 #include <sys/lcd.h>
 #include <sys/timers.h>
 #include <ti/getcsc.h>
