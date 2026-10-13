@@ -1,0 +1,65 @@
+# dockd.service - calcScreen dock daemon (TI-84 Plus CE docking station)
+#
+# Installed to /etc/systemd/system/ by pi/install.sh.
+# Extra command-line flags go in /etc/default/dockd as DOCKD_OPTS="...".
+
+[Unit]
+Description=calcScreen dock daemon
+# Never give up restarting: this is the only thing the appliance does.
+StartLimitIntervalSec=0
+# Own tty1: no login prompt may draw there.
+Conflicts=getty@tty1.service autovt@tty1.service
+After=getty@tty1.service autovt@tty1.service
+# Needs udev (input devices, DRM, USB) and local mounts, but NOT the network:
+# Wi-Fi is optional and must never delay the picture.
+Wants=systemd-udevd.service
+After=systemd-udevd.service local-fs.target
+# Settings live on the 'dockdata' partition when there is one. Wants (not
+# Requires): if the partition is missing or broken dockd must still start.
+Wants=var-lib-dockd.mount
+After=var-lib-dockd.mount
+# Let the console font/keymap setup finish first so it does not redraw tty1.
+After=console-setup.service keyboard-setup.service systemd-vconsole-setup.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+EnvironmentFile=-/etc/default/dockd
+ExecStart=/usr/local/bin/dockd --drives /media/dock --state /var/lib/dockd $DOCKD_OPTS
+Restart=always
+RestartSec=1
+# dockd pings sd_notify(WATCHDOG=1); if its poll loop hangs, it is restarted.
+# The hardware watchdog (RuntimeWatchdogSec=15) covers a hung system.
+WatchdogSec=10
+TimeoutStartSec=20
+TimeoutStopSec=5
+
+# tty1 is dockd's: it becomes the controlling terminal (fd 0) so dockd can
+# switch it to KD_GRAPHICS and handle VT switching for "drop to shell".
+# tty-force takes it even if a stale getty still holds it. Keyboard input does
+# NOT come from the tty: dockd reads evdev with EVIOCGRAB.
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty-force
+StandardOutput=journal
+StandardError=journal
+
+# Scheduling: dockd is a single-threaded, I/O-bound poll() loop (USB bulk in,
+# DRM dirty-rects out, evdev in). On an otherwise idle Pi 4 plain CFS with a
+# raised priority gives sub-millisecond wake-up latency, which is far below
+# one 33 ms frame. SCHED_FIFO/RR is deliberately NOT used: a bug that makes
+# dockd spin would then starve sshd and NetworkManager (RT throttling leaves
+# only 5% CPU), making the box unreachable exactly when you need to debug it.
+Nice=-10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=0
+OOMScoreAdjust=-900
+
+# No filesystem sandboxing on purpose: dockd needs DRM, evdev, USB, mounts,
+# nmcli, reboot, and its "drop to shell" child (login -f dock) inherits the
+# mount namespace, so ProtectHome/ProtectSystem would break the shell.
+
+[Install]
+WantedBy=multi-user.target

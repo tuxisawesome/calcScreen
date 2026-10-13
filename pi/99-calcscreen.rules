@@ -1,0 +1,22 @@
+# 99-calcscreen.rules - udev rules for the calcScreen dock.
+# Installed to /etc/udev/rules.d/ by pi/install.sh.
+
+# ---------------------------------------------------------------------------
+# (a) The calculator: never autosuspend it, and keep ModemManager off it.
+#     0451:e008 = TI-84 Plus CE in TI-OS (DUSB link protocol, fallback path)
+#     1209:0001 = TI-84 Plus CE running the DOCK driver (fast path)
+# ---------------------------------------------------------------------------
+ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0451", ATTR{idProduct}=="e008", TEST=="power/control", ATTR{power/control}="on", ENV{ID_MM_DEVICE_IGNORE}="1"
+ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1209", ATTR{idProduct}=="0001", TEST=="power/control", ATTR{power/control}="on", ENV{ID_MM_DEVICE_IGNORE}="1"
+# If the DOCK driver exposes a CDC-ACM serial port, give it a stable name.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="0001", ENV{ID_MM_DEVICE_IGNORE}="1", SYMLINK+="calcdock"
+
+# ---------------------------------------------------------------------------
+# (b) USB drives: mount every USB filesystem under /media/dock/<label>.
+#     udev RUN programs must return quickly and udevd runs them in a private
+#     mount namespace, so the helper is started as a transient systemd unit
+#     (systemd-run --no-block returns immediately) and it mounts through PID 1
+#     with systemd-mount.
+# ---------------------------------------------------------------------------
+ACTION=="add", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{ID_FS_USAGE}=="filesystem", ENV{ID_FS_TYPE}=="vfat|exfat|ext4|ext3|ext2|ntfs|ntfs3", RUN+="/usr/bin/systemd-run --no-block --quiet --collect --description=calcScreen-automount-%k /usr/local/sbin/dock-automount add %k"
+ACTION=="remove", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{ID_FS_USAGE}=="filesystem", RUN+="/usr/bin/systemd-run --no-block --quiet --collect --description=calcScreen-autounmount-%k /usr/local/sbin/dock-automount remove %k"

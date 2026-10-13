@@ -1,0 +1,165 @@
+#!/bin/bash
+# dock-automount - mount/unmount USB drives for the calcScreen dock.
+#
+# Started by /etc/udev/rules.d/99-calcscreen.rules through
+# `systemd-run --no-block` (so udev never waits on it):
+#
+#   dock-automount add KERNEL_NAME      e.g. add sda1
+#   dock-automount remove KERNEL_NAME
+#
+# Drives are mounted at /media/dock/<LABEL> (label reduced to [A-Za-z0-9_-],
+# at most 16 characters; the kernel name is used when there is no usable
+# label or the name is already taken). Mounting goes through PID 1 with
+# systemd-mount, so the mount is visible system-wide.
+#
+# Mount options are chosen to survive pulling the drive or the power:
+#   sync      every write goes to the device before write() returns
+#   flush     (vfat) flush the FAT on close as well
+#   noatime   no metadata writes for reads
+#   fsck      systemd-mount runs fsck -a first, which repairs a FAT "dirty"
+#             bit or an ext4 journal after an unclean removal
+set -euo pipefail
+
+MEDIA=${DOCK_MEDIA_DIR:-/media/dock}
+STATE=/run/dock-automount
+MAXLEN=16
+
+log() { echo "dock-automount: $*" >&2; }
+
+usage() { echo "usage: dock-automount add|remove KERNEL_NAME" >&2; exit 2; }
+
+[[ $# -eq 2 ]] || usage
+action=$1
+kname=$2
+[[ $kname =~ ^[A-Za-z0-9._-]+$ && $kname != .* ]] || { log "bad device name '$kname'"; exit 2; }
+dev=/dev/$kname
+
+mkdir -p "$STATE"
+exec 9>"$STATE/.lock"
+flock 9
+
+# Reduce a label to [A-Za-z0-9_-], at most $MAXLEN characters.
+sanitize() {
+    local s=$1
+    s=${s//[^A-Za-z0-9_-]/_}
+    # no leading '-' (looks like an option) and no leading/trailing '_'
+    while [[ $s == [-_]* ]]; do s=${s:1}; done
+    while [[ $s == *_ ]]; do s=${s%_}; done
+    printf '%s' "${s:0:$MAXLEN}"
+}
+
+# Parent disk of a block device (the device itself for whole-disk filesystems).
+disk_of() {
+    local p
+    p=$(lsblk -dno PKNAME "$1" 2>/dev/null || true)
+    if [[ -n $p ]]; then printf '%s' "$p"; else printf '%s' "${1#/dev/}"; fi
+}
+
+# Disks that hold the running system (also when booting from a USB SSD).
+system_disks() {
+    local mp src
+    for mp in / /media/root-ro /boot/firmware /boot /var/lib/dockd; do
+        src=$(findmnt -nro SOURCE -M "$mp" 2>/dev/null || true)
+        src=${src%%\[*}
+        [[ $src == /dev/* && -b $src ]] && disk_of "$src" && echo
+    done
+    for lbl in dockdata bootfs rootfs; do
+        src=$(blkid -L "$lbl" 2>/dev/null || true)
+        [[ -n $src ]] && disk_of "$src" && echo
+    done
+    return 0
+}
+
+do_add() {
+    local key val fstype="" label="" usage_="" bus="" name mp opts type uid gid d
+    [[ -b $dev ]] || { log "$dev is gone"; return 0; }
+
+    while IFS='=' read -r key val; do
+        case $key in
+            ID_FS_TYPE) fstype=$val ;;
+            ID_FS_LABEL) label=$val ;;
+            ID_FS_USAGE) usage_=$val ;;
+            ID_BUS) bus=$val ;;
+        esac
+    done < <(udevadm info --query=property --name="$dev" 2>/dev/null || true)
+
+    [[ $bus == usb && $usage_ == filesystem ]] || { log "$dev: not a USB filesystem, ignoring"; return 0; }
+
+    case ${label,,} in
+        dockdata|bootfs|rootfs) log "$dev: system label '$label', ignoring"; return 0 ;;
+    esac
+    d=$(disk_of "$dev")
+    if system_disks | grep -qxF "$d"; then
+        log "$dev is on the system disk $d, ignoring"
+        return 0
+    fi
+    if findmnt -nr --source "$dev" >/dev/null 2>&1; then
+        log "$dev is already mounted, ignoring"
+        return 0
+    fi
+
+    uid=$(id -u dock 2>/dev/null || echo 0)
+    gid=$(id -g dock 2>/dev/null || echo 0)
+    local common="rw,nosuid,nodev,noexec,noatime,sync"
+    type=$fstype
+    case $fstype in
+        vfat)  opts="$common,flush,uid=$uid,gid=$gid,umask=0022,shortname=mixed,utf8=1,errors=remount-ro" ;;
+        exfat) opts="$common,uid=$uid,gid=$gid,umask=0022,iocharset=utf8,errors=remount-ro" ;;
+        ext2|ext3|ext4) opts="$common,errors=remount-ro"; type=ext4 ;;
+        ntfs|ntfs3) opts="$common,uid=$uid,gid=$gid,umask=0022,iocharset=utf8"; type=ntfs3 ;;
+        *) log "$dev: unsupported filesystem '$fstype', ignoring"; return 0 ;;
+    esac
+
+    name=$(sanitize "$label")
+    [[ -n $name ]] || name=$kname
+    if mountpoint -q "$MEDIA/$name" || grep -qxsF "$MEDIA/$name" "$STATE"/[!.]* 2>/dev/null; then
+        # name taken by another drive: LABEL-kname, still at most $MAXLEN chars
+        local room=$((MAXLEN - 1 - ${#kname}))
+        ((room < 0)) && room=0
+        name=${name:0:$room}
+        name=${name:+$name-}$kname
+        name=${name:0:$MAXLEN}
+    fi
+    mp=$MEDIA/$name
+    if mountpoint -q "$mp"; then
+        log "$mp is busy, not mounting $dev"
+        return 1
+    fi
+
+    mkdir -p "$MEDIA"
+    log "mounting $dev ($fstype, label '${label}') at $mp"
+    printf '%s\n' "$mp" > "$STATE/$kname"
+    if ! systemd-mount --no-block --automount=no --collect --fsck=yes \
+            --type="$type" --options="$opts" \
+            --description="calcScreen USB drive $name" "$dev" "$mp"; then
+        rm -f "$STATE/$kname"
+        log "systemd-mount failed for $dev"
+        return 1
+    fi
+}
+
+do_remove() {
+    local mp
+    [[ -f $STATE/$kname ]] || return 0
+    mp=$(<"$STATE/$kname")
+    rm -f "$STATE/$kname"
+    [[ $mp == "$MEDIA"/* ]] || return 0
+    log "unmounting $mp ($dev removed)"
+    # systemd usually stops the mount itself when the device disappears.
+    if mountpoint -q "$mp"; then
+        systemd-mount --umount "$mp" 2>/dev/null || umount -l "$mp" 2>/dev/null || true
+    fi
+    # Remove the now-empty directory so a stale name never shadows a drive.
+    local i
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        mountpoint -q "$mp" || break
+        sleep 0.5
+    done
+    mountpoint -q "$mp" || rmdir "$mp" 2>/dev/null || true
+}
+
+case $action in
+    add) do_add ;;
+    remove) do_remove ;;
+    *) usage ;;
+esac

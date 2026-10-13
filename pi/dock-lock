@@ -1,0 +1,80 @@
+#!/bin/bash
+# dock-lock - protect the calcScreen Pi against power loss again.
+#
+# Enables the read-only root overlay (all changes then live in RAM and vanish
+# at reboot) and mounts /boot read-only. Takes effect after a reboot.
+# Settings and Wi-Fi networks stay writable on the 'dockdata' partition.
+#
+#   sudo dock-lock            then reboot
+#   sudo dock-lock --reboot   reboot right away
+set -euo pipefail
+
+REBOOT=0
+for a in "$@"; do
+    case $a in
+        -r|--reboot) REBOOT=1 ;;
+        -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "dock-lock: unknown option '$a'" >&2; exit 2 ;;
+    esac
+done
+
+if [[ $EUID -ne 0 ]]; then
+    exec sudo -- "$0" "$@"
+fi
+
+die() { echo "dock-lock: error: $*" >&2; exit 1; }
+say() { echo "dock-lock: $*"; }
+
+command -v raspi-config >/dev/null || die "raspi-config is not installed"
+
+if [[ -f /boot/firmware/cmdline.txt ]]; then BOOT=/boot/firmware; else BOOT=/boot; fi
+CMDLINE=$BOOT/cmdline.txt
+[[ -f $CMDLINE ]] || die "$CMDLINE not found"
+
+overlay_now() { grep -qw 'overlayroot=tmpfs' /proc/cmdline; }
+overlay_conf() { grep -qw 'overlayroot=tmpfs' "$CMDLINE"; }
+bootro_conf() { grep -E "[[:space:]]$BOOT[[:space:]]" "${1:-/etc/fstab}" | grep -qE 'defaults.*,ro([[:space:],]|$)'; }
+
+if overlay_now; then
+    # Still running on the overlay (e.g. dock-unlock was run but no reboot
+    # yet): re-enable it in cmdline.txt and fix the real fstab underneath.
+    if ! overlay_conf; then
+        say "re-enabling the read-only root overlay"
+        raspi-config nonint do_overlayfs 0 || die "raspi-config failed"
+    fi
+    if [[ -f /media/root-ro/etc/fstab ]] && ! bootro_conf /media/root-ro/etc/fstab; then
+        command -v overlayroot-chroot >/dev/null || die "overlayroot-chroot missing"
+        say "making $BOOT read-only (in the real /etc/fstab)"
+        overlayroot-chroot sed -i -e "s#\(.*$BOOT.*\)defaults\(.*\)#\1defaults,ro\2#" /etc/fstab 2>/dev/null ||
+            die "could not edit the real /etc/fstab"
+    fi
+    sync
+    say "locked (the overlay is active now and stays active after reboot)"
+    exit 0
+fi
+
+if overlay_conf && bootro_conf; then
+    say "already locked; reboot to activate if you have not yet:  sudo reboot"
+    exit 0
+fi
+
+if ! dpkg -s overlayroot >/dev/null 2>&1; then
+    say "installing overlayroot (needs network)"
+    apt-get install -y overlayroot || die "could not install overlayroot"
+fi
+
+say "enabling the read-only root overlay and read-only $BOOT"
+# Outside an active overlay this one call enables both the overlay and the
+# read-only boot partition (raspi-config nonint semantics).
+raspi-config nonint do_overlayfs 0 || die "raspi-config failed"
+overlay_conf || die "overlay was not enabled in $CMDLINE"
+if ! bootro_conf; then
+    raspi-config nonint enable_bootro || say "warning: could not make $BOOT read-only"
+fi
+sync
+
+say "locked. Reboot to activate:  sudo reboot"
+if ((REBOOT)); then
+    say "rebooting..."
+    systemctl reboot
+fi

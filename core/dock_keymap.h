@@ -6,8 +6,9 @@
  * to HID usages in host/hal_linux).
  *
  * Output is a TI key event: the GetKey code TI-OS should see (ti/getkey.h
- * k* values, 2-byte keys as 0xXXYY with the 0xFC/0xFD prefix in the high byte)
- * and, when one exists, the physical GetCSC scan code (ti/getcsc.h sk_*).
+ * k* values, 2-byte keys as 0xPPXX with the 0xFE/0xFC/0xFB prefix in the high
+ * byte) and, when one exists, the physical GetCSC scan code (ti/getcsc.h
+ * sk_*).
  */
 #ifndef DOCK_KEYMAP_H
 #define DOCK_KEYMAP_H
@@ -53,7 +54,12 @@ enum dock_hotkey {
  *   F8 -> MATH, F9 -> APPS, F10 -> PRGM, F11 -> VARS, Tab -> ALPHA,
  *   Ctrl+key -> 2nd function of key, Alt+key -> ALPHA function,
  *   Home -> 2nd+LEFT, End -> 2nd+RIGHT, Insert -> INS (2nd+DEL),
- *   Pause/Break -> ON (DOCK_KEYF_ON), PgUp/PgDn -> 2nd+UP / 2nd+DOWN. */
+ *   Pause/Break -> ON (DOCK_KEYF_ON), PgUp/PgDn -> ALPHA+UP / ALPHA+DOWN
+ *   (page up/down; 2nd+UP/DOWN only change the brightness on the CE),
+ *   Shift+'-' -> (-) negation, '=' '<' '>' '!' -> TEST/PRB tokens.
+ * 2-byte GetKey codes are 0xPPXX with the prefix (0xFE/0xFC/0xFB) in the
+ * high byte, as in libticalcs (the CE toolchain's k_* swap the bytes).
+ * Hotkeys (dock_keymap_hotkey) take precedence: they translate to nothing. */
 bool dock_keymap_translate(uint8_t hid_usage, uint8_t mods, dock_ti_key_t *out);
 
 /* ASCII for a key press (0 if none), for HIDKEY events. */

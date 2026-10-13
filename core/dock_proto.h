@@ -58,8 +58,11 @@ enum dock_msg_type {
     DOCK_T_SCR_REFRESH = 0x13,/* host->calc: resend mode, palette and all rows */
 
     /* ---- input (host->calc) ---- */
-    DOCK_T_KEY = 0x20,        /* u16 tikey (GetKey code, 0 = none), u8 scancode
-                                 (GetCSC code, 0 = none), u8 flags (DOCK_KEYF_*) */
+    DOCK_T_KEY = 0x20,        /* u16 tikey (GetKey code, 0 = none; 2-byte keys
+                                 0xPPXX with the 0xFE/0xFC/0xFB prefix in the
+                                 high byte, see dock_keymap.h), u8 scancode
+                                 (physical GetCSC code of the key, 0 = none),
+                                 u8 flags (DOCK_KEYF_*) */
     DOCK_T_HIDKEY = 0x21,     /* u8 hid_usage, u8 modifiers, u8 down, u8 ascii */
 
     /* ---- audio (calc->host requests) ---- */
