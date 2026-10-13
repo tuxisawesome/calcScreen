@@ -280,8 +280,10 @@ static void ep0_send(size_t len)
     wr8(R_DMACTRL, 0x02); /* Dir = mem->FIFO (SPEC 4.2 step 3) */
     wr8(R_DMACTRL, 0x03); /* Start */
     if (!dma_wait()) {
-        /* reset/err/timeout: drop it; the host will retry or reset */
+        /* reset/err/timeout: stall so EP0 is not left wedged. If it was a bus
+         * reset, the reset handler clears this next poll anyway. */
         wr8(R_DMAFIFO, 0x00);
+        ep0_stall();
         return;
     }
     wr8(R_DEVISR, 0x80);
