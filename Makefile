@@ -33,10 +33,13 @@ e2e:
 	$(MAKE) -C host e2e
 
 # The calculator programs. Needs the CE C toolchain on PATH (cedev-config);
-# set CEDEV if it is installed elsewhere.
+# set CEDEV if it is installed elsewhere. RESIDOCK is the EXPERIMENTAL resident
+# fast-mirror flash app (docs/RESIDENT.md) - built here, but not published in
+# dist/ until it is validated in CEmu.
 calc:
 	$(MAKE) -C calc/dock
 	$(MAKE) -C calc/badapple
+	$(MAKE) -C calc/resident
 
 clean:
 	$(MAKE) -C tests clean
@@ -44,4 +47,5 @@ clean:
 	$(MAKE) -C tools clean
 	-$(MAKE) -C calc/dock clean
 	-$(MAKE) -C calc/badapple clean
+	-$(MAKE) -C calc/resident clean
 	rm -rf build
