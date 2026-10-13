@@ -93,6 +93,8 @@ void settings_store_load(settings_store_t *st, dock_settings_t *s, uint32_t *seq
         return;
     logv("settings: no valid record, using defaults");
     dock_settings_defaults(s, random_u32());
+    /* fresh, independent randomness for the join code */
+    dock_settings_new_join_code(s, random_u32());
     *seq = 0;
     if (!dock_settings_save(&st->io, s, seq))
         loge("settings: could not save defaults");

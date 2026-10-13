@@ -505,6 +505,23 @@ static int wav_parse(int fd, uint32_t *rate, uint8_t *fmt, uint8_t *ch,
 /* ------------------------------------------------------------------ */
 /* public                                                              */
 
+/* alsa-lib prints configuration noise to stderr; keep it for -v only. */
+static void alsa_error(const char *file, int line, const char *func, int err,
+                       const char *fmt, ...)
+{
+    char msg[256];
+    va_list ap;
+    (void)file;
+    (void)line;
+    (void)err;
+    if (!log_is_verbose())
+        return;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    logv("alsa: %s: %s", func, msg);
+}
+
 audio_t *audio_open(const char *backend, const char *device)
 {
     audio_t *a;
@@ -516,6 +533,8 @@ audio_t *audio_open(const char *backend, const char *device)
     if (!a)
         return NULL;
     a->null_backend = strcmp(backend, "null") == 0;
+    if (!a->null_backend)
+        snd_lib_error_set_handler(alsa_error);
     a->fd = -1;
     a->master_vol = 100;
     a->prog_vol = 100;
