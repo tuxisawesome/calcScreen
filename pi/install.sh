@@ -243,7 +243,17 @@ preflight() {
     [[ $arch == arm64 || $arch == aarch64 ]] ||
         warn "architecture is '$arch'; Raspberry Pi OS Lite 64-bit (arm64) is recommended"
     if [[ -r /proc/device-tree/model ]]; then
-        info "hardware: $(tr -d '\0' < /proc/device-tree/model)"
+        local model
+        model=$(tr -d '\0' < /proc/device-tree/model)
+        info "hardware: $model"
+        # The Pi 3 (and Zero/1/2) put all USB ports plus Ethernet on one shared
+        # USB 2.0 hub and supply less port current than the Pi 4. The dock works,
+        # but the calculator, keyboard and USB drive all share that bus.
+        case $model in
+            *"Raspberry Pi 3"*|*"Raspberry Pi 2"*|*"Raspberry Pi Zero"*|*"Raspberry Pi Model"*)
+                info "note: this model shares one USB 2.0 bus for all ports + Ethernet;"
+                info "      a powered USB hub is recommended for the keyboard + drive." ;;
+        esac
     fi
 
     if overlay_active; then

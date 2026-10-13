@@ -1,6 +1,6 @@
 # calcScreen architecture
 
-calcScreen turns a Raspberry Pi 4 into a docking station for a TI-84 Plus CE:
+calcScreen turns a Raspberry Pi 4 or Pi 3 into a docking station for a TI-84 Plus CE:
 plug the calculator into the Pi over USB, plug a USB keyboard and an HDMI
 monitor into the Pi, and the Pi mirrors the calculator's screen to the monitor
 and forwards the keyboard to the calculator. Calculator programs can also use

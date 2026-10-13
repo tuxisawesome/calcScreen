@@ -230,11 +230,45 @@ static bool try_pcm(audio_t *a, const char *name)
     return true;
 }
 
-/* Open the output for the current format: configured device, then the same
- * through the "plug" converter, then "default". */
+/* Find an ALSA card whose name/id matches the wanted sink and return a
+ * "plughw:CARD=<id>" string for it, or false if none match. This keeps the
+ * HDMI vs analog choice meaningful across boards whose card names differ
+ * (e.g. Pi 4 "vc4hdmi0" vs other Pis / x86), so a hardcoded default that is
+ * absent still resolves to the right kind of output. */
+static bool find_card(bool want_hdmi, char *out, size_t cap)
+{
+    int card = -1;
+    bool found = false;
+    while (!found && snd_card_next(&card) == 0 && card >= 0) {
+        char hw[32], id[64] = "", name[128] = "";
+        snd_ctl_t *ctl;
+        snd_ctl_card_info_t *info;
+        bool is_hdmi;
+        snprintf(hw, sizeof hw, "hw:%d", card);
+        if (snd_ctl_open(&ctl, hw, 0) < 0)
+            continue;
+        snd_ctl_card_info_alloca(&info);
+        if (snd_ctl_card_info(ctl, info) == 0) {
+            str_copy(id, sizeof id, snd_ctl_card_info_get_id(info));
+            str_copy(name, sizeof name, snd_ctl_card_info_get_name(info));
+            is_hdmi = strcasestr(id, "hdmi") || strcasestr(name, "hdmi");
+            if (is_hdmi == want_hdmi) {
+                snprintf(out, cap, "plughw:CARD=%s", id);
+                found = true;
+            }
+        }
+        snd_ctl_close(ctl);
+    }
+    return found;
+}
+
+/* Open the output for the current format: the configured device, the same
+ * through the "plug" converter, an auto-detected card of the right kind
+ * (HDMI vs analog), then "default". */
 static bool dev_open(audio_t *a)
 {
     char plug[sizeof a->device + 16];
+    char pick[96];
     dev_close(a);
     a->frames_written = 0;
     a->last_pos_ms = 0;
@@ -246,8 +280,19 @@ static bool dev_open(audio_t *a)
     }
     snprintf(plug, sizeof plug, "plug:'%s'", a->device);
     if (try_pcm(a, a->device) ||
-        (strncmp(a->device, "plug", 4) != 0 && try_pcm(a, plug)) ||
-        (strcmp(a->device, "default") != 0 && try_pcm(a, "default"))) {
+        (strncmp(a->device, "plug", 4) != 0 && try_pcm(a, plug))) {
+        a->pcm_open = true;
+        return true;
+    }
+    /* The configured card is absent: pick one matching the intended sink. */
+    if (find_card(strcasestr(a->device, "hdmi") != NULL, pick, sizeof pick)) {
+        logv("audio: %s unavailable, using %s", a->device, pick);
+        if (try_pcm(a, pick)) {
+            a->pcm_open = true;
+            return true;
+        }
+    }
+    if (strcmp(a->device, "default") != 0 && try_pcm(a, "default")) {
         a->pcm_open = true;
         return true;
     }

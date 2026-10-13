@@ -1,7 +1,9 @@
 # Raspberry Pi setup
 
-This guide turns a Raspberry Pi 4 and a blank microSD card into a calcScreen
-dock. When it's done, the Pi:
+This guide turns a Raspberry Pi 4 **or Pi 3** and a blank microSD card into a
+calcScreen dock. Both run the same 64-bit Raspberry Pi OS and the identical
+dock software; the Pi 3 just mirrors a little slower and shares one USB bus
+(see the Pi 3 notes below). When it's done, the Pi:
 
 * boots straight into `dockd`, with no login prompt and no console text,
 * survives having its power pulled at any time,
@@ -10,38 +12,64 @@ dock. When it's done, the Pi:
 
 You need:
 
-* a Raspberry Pi 4 and its official 5.1 V / 3 A USB-C power supply,
+* a Raspberry Pi 4 or Pi 3, with its official power supply
+  (Pi 4: 5.1 V / 3 A USB-C; Pi 3: 5.1 V / 2.5 A micro-USB),
 * a microSD card of 8 GB or more,
-* an HDMI monitor with a micro-HDMI cable or adapter,
+* an HDMI monitor and the right cable — a **micro-HDMI** cable/adapter for the
+  Pi 4, a plain **full-size HDMI** cable for the Pi 3,
 * a USB keyboard,
 * the TI-84 Plus CE and its standard USB cable (USB-A to mini-B, the "unit-to-computer" cable),
-* for the dockdata step, a Linux PC with an SD card reader (optional).
+* for the dockdata step, a Linux PC with an SD card reader (optional),
+* **on the Pi 3, a powered USB hub is recommended** (see the Pi 3 notes).
 
 ## 1. Wiring
 
 ```
- TI-84 Plus CE ──(mini-B ↔ USB-A cable)──► Pi USB 2.0 port (black)
- USB keyboard ───────────────────────────► other Pi USB 2.0 port (black)
- USB drive (Bad Apple files) ────────────► Pi USB 3.0 port (blue)
- Monitor ◄──(micro-HDMI)── Pi HDMI0 (the port next to the USB-C power socket)
+ TI-84 Plus CE ──(mini-B ↔ USB-A cable)──► any Pi USB port
+ USB keyboard ───────────────────────────► any Pi USB port
+ USB drive (video files) ────────────────► any Pi USB port
+ Monitor ◄──(HDMI)──────── Pi 4: HDMI0 (micro-HDMI, next to USB-C power)
+                           Pi 3: the single full-size HDMI port
  Speakers/headphones ◄──── Pi 3.5 mm jack, or the monitor's HDMI audio
 ```
 
 * Use the cable that came with the calculator. Some cheap mini-USB cables only
   carry power and have no data wires.
 * The calculator charges from the Pi while it is plugged in.
-* Plug the calculator and keyboard into the black USB 2.0 ports. USB 3.0
-  devices are known to interfere with 2.4 GHz Wi-Fi, so keep the blue ports for
-  drives.
-* Connect the monitor to **HDMI0** before powering on.
+* **Pi 4:** plug the calculator and keyboard into the black USB 2.0 ports and
+  keep the blue USB 3.0 ports for drives (USB 3.0 can interfere with 2.4 GHz
+  Wi-Fi).
+* **Pi 3:** all four ports and Ethernet share one USB 2.0 bus and the per-port
+  current is lower, so run the keyboard and a bus-powered USB drive through a
+  **powered** hub; the calculator alone on a port is fine.
+* Connect the monitor **before powering on** (Pi 4: HDMI0).
 * Use the official power supply. Under-voltage is the most common cause of SD
-  card corruption and random USB disconnects.
+  card corruption and random USB disconnects — especially on the Pi 3 with
+  several USB devices.
+
+### Raspberry Pi 3 notes
+
+The dock software is identical on the Pi 3; these are the practical
+differences from a Pi 4:
+
+* **Slower.** The Pi 3's CPU/GPU mirror the screen at a lower frame rate, and
+  the on-device USB update (Settings → Update from USB) takes noticeably longer
+  to rebuild. Both still work.
+* **One shared USB bus** for all ports plus Ethernet, with less per-port
+  current — use a **powered USB hub** for the keyboard and any bus-powered USB
+  drive. The installer prints this reminder when it detects a Pi 3.
+* **Audio** card names can differ from the Pi 4. dockd auto-detects the HDMI
+  vs headphone output, so "Audio output" in Settings still works; if a specific
+  device is wanted, set it in `/etc/default/dockd`, e.g.
+  `DOCKD_OPTS="--audio-hdmi plughw:CARD=vc4hdmi0"` (list cards with `aplay -l`).
+* Use **64-bit** Raspberry Pi OS Lite (the Pi 3 is arm64), so it matches the
+  published build and the update bundle.
 
 ## 2. Flash the SD card
 
 1. Install **Raspberry Pi Imager** on your PC: <https://www.raspberrypi.com/software/>.
 2. In Imager, choose:
-   * **Device:** Raspberry Pi 4
+   * **Device:** your board — Raspberry Pi 4 or Raspberry Pi 3
    * **OS:** *Raspberry Pi OS (other)* → **Raspberry Pi OS Lite (64-bit)** (Bookworm or Trixie)
    * **Storage:** your SD card
 3. Click **Edit settings** (OS customisation) and set:

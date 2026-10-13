@@ -1,6 +1,6 @@
 # calcScreen
 
-Turn a Raspberry Pi 4 into a docking station for a TI-84 Plus CE. Plug the
+Turn a Raspberry Pi 4 or Pi 3 into a docking station for a TI-84 Plus CE. Plug the
 calculator into the Pi over USB, a USB keyboard and an HDMI monitor into the
 Pi, and:
 
