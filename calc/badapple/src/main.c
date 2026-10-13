@@ -1,13 +1,19 @@
 /*
- * BADAPPLE - the calcScreen end-to-end test.
+ * BADAPPLE - the calcScreen video player (and end-to-end test).
  *
- * Streams a pre-converted 1 bpp video (badapple.bav) from the dock's USB drive
- * straight into VRAM and has the dock play the soundtrack (badapple.wav). The
- * dock mirrors the LCD back to the monitor, so the video and sound come out of
- * the Pi while the calculator does all the work. Video is slaved to the audio
- * clock reported by the dock, so they stay in sync.
+ * Plays a pre-converted video (badapple.bav) from the dock's USB drive by
+ * DMA-reading each frame straight into VRAM, and has the dock play the
+ * soundtrack (badapple.wav). The dock mirrors the LCD to the monitor, so the
+ * video and sound come out of the Pi while the calculator does the work.
  *
- * Controls: CLEAR or ON quits, ENTER pauses.
+ * The file carries its own pixel format, so this plays black-and-white *and*
+ * colour videos: the player switches the LCD to the format in the header
+ * (1/2/4/8 bpp palettized, or 16 bpp RGB565/RGB1555/RGB444 direct), loads the
+ * palette, and streams. The dock reports the live LCD mode and converts it, so
+ * nothing here is specific to Bad Apple. Any .bav the converter produces plays.
+ *
+ * Video is slaved to the audio clock reported by the dock, so they stay in
+ * sync. Controls: CLEAR or ON quits, ENTER pauses.
  */
 #include <stdint.h>
 #include <string.h>
@@ -24,13 +30,15 @@
 
 #define VIDEO_FILE "badapple.bav"
 #define AUDIO_FILE "badapple.wav"
-#define FRAME_W 320u
-#define FRAME_H 240u
-#define FRAME_BYTES (FRAME_W * FRAME_H / 8u)
+#define LCD_W 320u
+#define LCD_H 240u
+#define VRAM_BYTES (LCD_W * LCD_H * 2u) /* one 16-bpp frame = the LCD's RAM */
 
-/* PL111-style LCD control bits (TI-OS uses 0x92D: 16 bpp 565, BGR, TFT). */
-#define LCD_BPP_MASK 0x00Eu
-#define LCD_BPP_1 0x000u
+/* PL111 LCD control register fields (sys/lcd.h, lcd_Control at 0xE30018).
+ * bits [3:1] = LcdBpp code, bit 8 = BGR, bit 10 = BEPO (sub-byte pixel order). */
+#define LCD_BPP_SHIFT 1u
+#define LCD_BPP_MASK (0x7u << LCD_BPP_SHIFT)
+#define LCD_BGR 0x100u
 #define LCD_BEPO 0x400u
 
 static uint8_t *const vram = (uint8_t *)0xD40000;
@@ -56,9 +64,22 @@ static uint32_t frame_at(uint32_t pos_ms, uint32_t fps_milli)
 /* Local fallback clock when the dock cannot play audio. */
 static uint32_t clock_ms(void)
 {
-    /* timer_Get(1) counts 32768 Hz ticks when enabled by the toolchain's
-     * clock helpers; clock() is milliseconds-agnostic, so use CLOCKS_PER_SEC. */
     return (uint32_t)((uint64_t)clock() * 1000u / CLOCKS_PER_SEC);
+}
+
+/* The PL111 LcdBpp code for a BAV pixel format (bits [3:1] of lcd_Control). */
+static uint8_t lcd_bpp_code(uint8_t fmt)
+{
+    switch (fmt) {
+    case BAV_FMT_I1: return 0;
+    case BAV_FMT_I2: return 1;
+    case BAV_FMT_I4: return 2;
+    case BAV_FMT_I8: return 3;
+    case BAV_FMT_RGB1555: return 4;
+    case BAV_FMT_RGB565: return 6;
+    case BAV_FMT_RGB444: return 7;
+    default: return 6;
+    }
 }
 
 int main(void)
@@ -69,11 +90,13 @@ int main(void)
     uint8_t fh;
     size_t got = 0;
     uint24_t saved_ctrl, saved_base;
-    uint16_t saved_pal0, saved_pal1;
-    uint32_t shown = 0xFFFFFFFFu, next = 0, t0, paused_at = 0;
-    bool have_audio, paused = false;
+    uint16_t saved_pal[BAV_PALETTE_MAX];
+    uint32_t frame_bytes, max_bytes, data_off;
+    uint32_t shown = 0xFFFFFFFFu, next, t0, paused_at = 0;
+    bool have_audio, paused = false, direct;
     uint8_t back = 1;
-    int rc;
+    uint24_t ctrl;
+    int rc, i;
 
     if (!d) {
         message("DOCK not installed.", "Run DOCK first.");
@@ -91,24 +114,67 @@ int main(void)
     }
     rc = dock_fs_read(d, fh, hdr, sizeof hdr, &got);
     if (rc != DOCK_OK || got != sizeof hdr || !bav_header_read(hdr, &bav) ||
-        bav.width != FRAME_W || bav.height != FRAME_H || bav.bpp != 1) {
+        bav.width != LCD_W || bav.height != LCD_H) {
         dock_fs_close(d, fh);
         dock_close(d);
-        message("badapple.bav is not", "a 320x240 1bpp BAV.");
+        message("badapple.bav is not a", "320x240 BAV file.");
         return 1;
     }
 
-    /* Switch the LCD to 1 bpp, black/white palette. */
+    frame_bytes = bav.frame_bytes;
+    data_off = bav.data_offset;
+    /* Two frames must fit in VRAM for double buffering. */
+    max_bytes = VRAM_BYTES / 2u;
+    if (frame_bytes == 0 || frame_bytes > max_bytes) {
+        dock_fs_close(d, fh);
+        dock_close(d);
+        message("Frame too large for", "double-buffered VRAM.");
+        return 1;
+    }
+
+    /* Save the LCD state we are about to change. */
     saved_ctrl = lcd_Control;
     saved_base = lcd_UpBase;
-    saved_pal0 = lcd_Palette[0];
-    saved_pal1 = lcd_Palette[1];
-    memset(vram, 0, 2u * FRAME_BYTES);
-    lcd_Palette[0] = 0x0000;
-    lcd_Palette[1] = 0x7FFF;
+    direct = bav.fmt >= BAV_FMT_RGB1555;
+    for (i = 0; i < (int)BAV_PALETTE_MAX; i++)
+        saved_pal[i] = lcd_Palette[i];
+
+    /* Load the palette for palettized formats. If the file carries one, use
+     * it (colour videos do); otherwise synthesize a grayscale ramp so plain
+     * 1/2/4/8-bpp files (e.g. black-and-white Bad Apple) still render. */
+    if (!direct) {
+        uint16_t count = bav_palette_for_fmt(bav.fmt); /* 2/4/16/256 */
+        if (bav.palette_count) {
+            uint16_t pal[BAV_PALETTE_MAX];
+            uint32_t n = (uint32_t)bav.palette_count * 2u;
+            if (dock_fs_read(d, fh, pal, n, &got) != DOCK_OK || got != n) {
+                dock_fs_close(d, fh);
+                dock_close(d);
+                message("Could not read the", "video palette.");
+                return 1;
+            }
+            for (i = 0; i < (int)bav.palette_count; i++)
+                lcd_Palette[i] = pal[i];
+        } else {
+            /* Grayscale ramp in RGB1555: index 0 = black .. max = white. */
+            for (i = 0; i < (int)count; i++) {
+                uint16_t g = count > 1
+                                 ? (uint16_t)((uint32_t)i * 31u / (count - 1u))
+                                 : 31u;
+                lcd_Palette[i] = (uint16_t)((g << 10) | (g << 5) | g);
+            }
+        }
+    }
+
+    /* Switch the LCD to the file's format. Sub-byte formats carry a bit order;
+     * BEPO set means the first pixel is in the high bits (no LSB-first flag). */
+    memset(vram, 0, VRAM_BYTES);
+    ctrl = (saved_ctrl & ~(uint24_t)(LCD_BPP_MASK | LCD_BEPO)) |
+           ((uint24_t)lcd_bpp_code(bav.fmt) << LCD_BPP_SHIFT);
+    if (!direct && !(bav.flags & BAV_F_LSB_FIRST))
+        ctrl |= LCD_BEPO;
     lcd_UpBase = (uint24_t)vram;
-    lcd_Control = (saved_ctrl & ~(uint24_t)(LCD_BPP_MASK | LCD_BEPO)) | LCD_BPP_1 |
-                  ((bav.flags & BAV_F_LSB_FIRST) ? 0u : LCD_BEPO);
+    lcd_Control = ctrl;
 
     have_audio = dock_audio_play_file(d, AUDIO_FILE) == DOCK_OK;
     t0 = clock_ms();
@@ -121,8 +187,6 @@ int main(void)
         if (key == sk_Enter) {
             paused = !paused;
             if (have_audio) {
-                /* The audio API has no pause: stop and resume by restart is
-                 * not seekable, so pausing simply stops the music. */
                 if (paused)
                     dock_audio_stop(d);
             } else if (paused) {
@@ -156,14 +220,15 @@ int main(void)
 
         /* Read the frame straight into the back buffer, then flip. */
         if (next != shown + 1u) {
-            uint32_t off = bav.data_offset + next * bav.frame_bytes;
+            uint32_t off = data_off + next * frame_bytes;
             if (dock_fs_seek(d, fh, (int32_t)off, DOCK_SEEK_SET, NULL) != DOCK_OK)
                 break;
         }
-        if (dock_fs_read(d, fh, vram + back * FRAME_BYTES, FRAME_BYTES, &got) != DOCK_OK ||
-            got != FRAME_BYTES)
+        if (dock_fs_read(d, fh, vram + (uint32_t)back * max_bytes, frame_bytes,
+                         &got) != DOCK_OK ||
+            got != frame_bytes)
             break;
-        lcd_UpBase = (uint24_t)(vram + back * FRAME_BYTES);
+        lcd_UpBase = (uint24_t)(vram + (uint32_t)back * max_bytes);
         back ^= 1u;
         shown = next;
         dock_screen_push(d);
@@ -176,8 +241,8 @@ int main(void)
     /* Restore TI-OS's LCD setup and redraw the homescreen. */
     lcd_Control = saved_ctrl;
     lcd_UpBase = saved_base;
-    lcd_Palette[0] = saved_pal0;
-    lcd_Palette[1] = saved_pal1;
+    for (i = 0; i < (int)BAV_PALETTE_MAX; i++)
+        lcd_Palette[i] = saved_pal[i];
     dock_close(d);
     os_ClrHome();
     os_ClrLCDFull();

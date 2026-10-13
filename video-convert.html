@@ -1,0 +1,582 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>calcScreen video converter</title>
+<!--
+  calcScreen video converter — turns any video your browser can play into the
+  .bav + .wav pair the calcScreen player (BADAPPLE) reads from a USB drive.
+
+  Everything runs locally in your browser: the <video> element decodes frames,
+  a 320x240 <canvas> samples them, and the pixels are quantised to the chosen
+  TI-84 Plus CE LCD format. Nothing is uploaded. Works offline — no libraries.
+
+  Output must match core/bav.h and the player in calc/badapple/src/main.c:
+    - BAV1 32-byte little-endian header + optional RGB1555 palette + frames.
+    - Palettized formats (1/4/8 bpp) store a palette and pixel indices, packed
+      LSB-first (pixel 0 in the low bits) with BAV_F_LSB_FIRST set.
+    - RGB565 stores standard R-high 565 (the dock's BGR mapping yields correct
+      colour because TI-OS runs the panel in BGR mode).
+  The audio is resampled to 22050 Hz mono signed-16 PCM WAV.
+-->
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #0f1216; --panel: #171c22; --fg: #e8ecef; --dim: #8b97a3;
+    --accent: #3fa7ff; --line: #273039; --ok: #57d08a; --warn: #ffb13f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  header { padding: 20px 16px 8px; max-width: 880px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  header p { color: var(--dim); margin: 0; }
+  main { max-width: 880px; margin: 0 auto; padding: 16px; display: grid;
+         gap: 16px; grid-template-columns: 1fr; }
+  @media (min-width: 720px) { main { grid-template-columns: 320px 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line);
+           border-radius: 10px; padding: 16px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em;
+              color: var(--dim); margin: 0 0 12px; }
+  label { display: block; margin: 10px 0 4px; font-size: 13px; color: var(--dim); }
+  input[type=file], select, input[type=number], input[type=range] {
+    width: 100%; background: #0d1116; color: var(--fg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 7px 8px; font: inherit;
+  }
+  .row { display: flex; gap: 10px; align-items: center; }
+  .row > * { flex: 1; }
+  .check { display: flex; align-items: center; gap: 8px; margin: 10px 0 0; }
+  .check input { width: auto; flex: 0; }
+  .check label { margin: 0; color: var(--fg); }
+  button {
+    margin-top: 14px; width: 100%; background: var(--accent); color: #04121f;
+    border: 0; border-radius: 7px; padding: 11px; font: 600 15px/1 inherit;
+    cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  button.secondary { background: #222c35; color: var(--fg); }
+  canvas { width: 100%; image-rendering: pixelated; background: #000;
+           border: 1px solid var(--line); border-radius: 8px; display: block; }
+  .preview-wrap { position: relative; }
+  .hint { color: var(--dim); font-size: 12px; margin-top: 8px; }
+  .bar { height: 10px; background: #0d1116; border: 1px solid var(--line);
+         border-radius: 6px; overflow: hidden; margin-top: 12px; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .1s; }
+  .status { margin-top: 10px; min-height: 1.4em; }
+  .status.err { color: var(--warn); }
+  .status.ok { color: var(--ok); }
+  .downloads { display: flex; gap: 10px; margin-top: 12px; }
+  .downloads a {
+    flex: 1; text-align: center; text-decoration: none; color: var(--fg);
+    background: #222c35; border: 1px solid var(--line); border-radius: 7px;
+    padding: 10px; }
+  .downloads a[aria-disabled=true] { opacity: .4; pointer-events: none; }
+  code { background: #0d1116; padding: 1px 5px; border-radius: 4px; }
+  .est { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<header>
+  <h1>calcScreen video converter</h1>
+  <p>Turn any video into the <code>badapple.bav</code> + <code>badapple.wav</code>
+     pair for your dock's USB drive. Colour or black &amp; white. Runs entirely
+     in your browser.</p>
+</header>
+
+<main>
+  <section class="panel" id="controls">
+    <h2>1 · Source &amp; options</h2>
+
+    <label for="file">Video file</label>
+    <input type="file" id="file" accept="video/*">
+
+    <label for="fmt">Colour format</label>
+    <select id="fmt">
+      <option value="rgb565">High colour — RGB565 (best, biggest)</option>
+      <option value="i8">256 colours — 8 bpp palette</option>
+      <option value="i4">16 colours — 4 bpp palette</option>
+      <option value="i1" selected>Black &amp; white — 1 bpp (classic Bad Apple)</option>
+    </select>
+    <div class="hint" id="bw-note">
+      Full speed over USB is ~1.2 MB/s. Smaller formats &amp; lower fps play
+      smoother; the dock only resends rows that changed.
+    </div>
+
+    <div class="row">
+      <div>
+        <label for="fps">Frames / second</label>
+        <input type="number" id="fps" min="1" max="30" step="0.001" value="15">
+      </div>
+      <div>
+        <label for="scale">Fit</label>
+        <select id="scale">
+          <option value="contain" selected>Letterbox (keep aspect)</option>
+          <option value="cover">Crop to fill</option>
+          <option value="fill">Stretch</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="bw-opts">
+      <label for="thresh">B&amp;W threshold <span id="thresh-val" class="est">128</span></label>
+      <input type="range" id="thresh" min="0" max="255" value="128">
+    </div>
+
+    <div class="check">
+      <input type="checkbox" id="dither">
+      <label for="dither">Dither (Floyd–Steinberg)</label>
+    </div>
+    <div class="check">
+      <input type="checkbox" id="invert">
+      <label for="invert">Invert</label>
+    </div>
+
+    <button id="go" disabled>Convert</button>
+    <button id="cancel" class="secondary" style="display:none">Cancel</button>
+
+    <div class="bar"><div id="prog"></div></div>
+    <div class="status" id="status">Choose a video to begin.</div>
+    <div class="downloads">
+      <a id="dl-bav" aria-disabled="true" download="badapple.bav">⬇ badapple.bav</a>
+      <a id="dl-wav" aria-disabled="true" download="badapple.wav">⬇ badapple.wav</a>
+    </div>
+    <div class="hint" id="est"></div>
+  </section>
+
+  <section class="panel">
+    <h2>2 · Preview (320 × 240)</h2>
+    <div class="preview-wrap">
+      <canvas id="preview" width="320" height="240"></canvas>
+    </div>
+    <div class="hint">Left: what the calculator will show, in the chosen format.
+       Copy both files to the root of a FAT32 USB stick and run BADAPPLE.</div>
+  </section>
+</main>
+
+<!-- hidden working elements -->
+<video id="vid" style="display:none" muted playsinline></video>
+<canvas id="work" width="320" height="240" style="display:none"></canvas>
+
+<script>
+"use strict";
+(function () {
+  const W = 320, H = 240;
+  const $ = (id) => document.getElementById(id);
+  const fileEl = $("file"), fmtEl = $("fmt"), fpsEl = $("fps"), scaleEl = $("scale");
+  const threshEl = $("thresh"), threshVal = $("thresh-val"), ditherEl = $("dither");
+  const invertEl = $("invert"), goBtn = $("go"), cancelBtn = $("cancel");
+  const progEl = $("prog"), statusEl = $("status"), estEl = $("est");
+  const dlBav = $("dl-bav"), dlWav = $("dl-wav");
+  const vid = $("vid"), work = $("work"), preview = $("preview");
+  const wctx = work.getContext("2d", { willReadFrequently: true });
+  const pctx = preview.getContext("2d");
+
+  let file = null, cancelled = false, running = false;
+  let bavURL = null, wavURL = null;
+
+  const BAV_FMT = { i1: 0, i2: 1, i4: 2, i8: 3, rgb565: 5 };
+  const BPP = { i1: 1, i2: 2, i4: 4, i8: 8, rgb565: 16 };
+
+  function setStatus(msg, cls) { statusEl.textContent = msg; statusEl.className = "status" + (cls ? " " + cls : ""); }
+  function setProgress(p) { progEl.style.width = Math.max(0, Math.min(100, p * 100)) + "%"; }
+
+  function refreshOpts() {
+    const bw = fmtEl.value === "i1";
+    $("bw-opts").style.display = bw ? "" : "none";
+    const bpp = BPP[fmtEl.value];
+    const fps = Math.max(1, +fpsEl.value || 1);
+    const frameBytes = (W * H * bpp) / 8;
+    const kbs = (frameBytes * fps) / 1024;
+    estEl.textContent = "≈ " + Math.round(kbs) + " KB/s at " + fps + " fps · " +
+      Math.round(frameBytes / 1024) + " KB/frame" +
+      (kbs > 1200 ? " — above the USB limit; expect a lower real frame rate." : "");
+  }
+  threshEl.addEventListener("input", () => { threshVal.textContent = threshEl.value; });
+  [fmtEl, fpsEl].forEach((e) => e.addEventListener("input", refreshOpts));
+
+  fileEl.addEventListener("change", () => {
+    file = fileEl.files[0] || null;
+    if (!file) return;
+    vid.src = URL.createObjectURL(file);
+    vid.addEventListener("loadeddata", () => {
+      goBtn.disabled = false;
+      setStatus("Loaded " + file.name + " (" + vid.videoWidth + "×" + vid.videoHeight +
+        ", " + vid.duration.toFixed(1) + "s). Ready to convert.");
+      drawFrameToWork();
+      renderPreview();
+    }, { once: true });
+    vid.addEventListener("error", () => setStatus("Could not load this video.", "err"), { once: true });
+  });
+
+  // Draw the current video frame into the 320x240 work canvas with the chosen fit.
+  function drawFrameToWork() {
+    wctx.fillStyle = "#000";
+    wctx.fillRect(0, 0, W, H);
+    const vw = vid.videoWidth, vh = vid.videoHeight;
+    if (!vw || !vh) return;
+    let dw = W, dh = H, dx = 0, dy = 0;
+    const ar = vw / vh, target = W / H, mode = scaleEl.value;
+    if (mode === "contain") {
+      if (ar > target) { dh = Math.round(W / ar); dy = (H - dh) >> 1; }
+      else { dw = Math.round(H * ar); dx = (W - dw) >> 1; }
+      wctx.drawImage(vid, dx, dy, dw, dh);
+    } else if (mode === "cover") {
+      let sw = vw, sh = vh, sx = 0, sy = 0;
+      if (ar > target) { sw = Math.round(vh * target); sx = (vw - sw) >> 1; }
+      else { sh = Math.round(vw / target); sy = (vh - sh) >> 1; }
+      wctx.drawImage(vid, sx, sy, sw, sh, 0, 0, W, H);
+    } else {
+      wctx.drawImage(vid, 0, 0, W, H);
+    }
+  }
+
+  // ---- quantisation ------------------------------------------------------
+
+  function luma(r, g, b) { return (r * 77 + g * 150 + b * 29) >> 8; }
+  function to565(r, g, b) { return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3); }
+  function to1555(r, g, b) { return ((r & 0xF8) << 7) | ((g & 0xF8) << 2) | (b >> 3); }
+
+  // Median-cut palette of `n` colours from sampled RGB pixels. Returns an array
+  // of {r,g,b} (8-bit, already snapped to the 5-bit grid the LCD uses).
+  function medianCut(samples, n) {
+    let boxes = [{ px: samples }];
+    const range = (box, ch) => {
+      let lo = 255, hi = 0;
+      for (const p of box.px) { const v = p[ch]; if (v < lo) lo = v; if (v > hi) hi = v; }
+      return hi - lo;
+    };
+    while (boxes.length < n) {
+      let bi = -1, best = -1, bch = 0;
+      for (let i = 0; i < boxes.length; i++) {
+        if (boxes[i].px.length < 2) continue;
+        for (let c = 0; c < 3; c++) { const r = range(boxes[i], c); if (r > best) { best = r; bi = i; bch = c; } }
+      }
+      if (bi < 0) break;
+      const box = boxes[bi];
+      box.px.sort((a, b) => a[bch] - b[bch]);
+      const mid = box.px.length >> 1;
+      boxes.splice(bi, 1, { px: box.px.slice(0, mid) }, { px: box.px.slice(mid) });
+    }
+    return boxes.map((box) => {
+      let r = 0, g = 0, b = 0;
+      for (const p of box.px) { r += p[0]; g += p[1]; b += p[2]; }
+      const k = Math.max(1, box.px.length);
+      r = Math.round(r / k); g = Math.round(g / k); b = Math.round(b / k);
+      // snap to the 5-bit grid so the stored palette round-trips exactly
+      return { r: (r & 0xF8) | (r >> 5), g: (g & 0xF8) | (g >> 5), b: (b & 0xF8) | (b >> 5) };
+    });
+  }
+
+  function nearest(pal, r, g, b) {
+    let bi = 0, bd = 1e9;
+    for (let i = 0; i < pal.length; i++) {
+      const dr = pal[i].r - r, dg = pal[i].g - g, db = pal[i].b - b;
+      const d = dr * dr + dg * dg + db * db;
+      if (d < bd) { bd = d; bi = i; }
+    }
+    return bi;
+  }
+
+  // Build a palette for a palettized format by sampling frames across the video.
+  async function buildPalette(fmt, nFrames, step) {
+    const n = fmt === "i8" ? 256 : fmt === "i4" ? 16 : 2;
+    if (fmt === "i1") {
+      const inv = invertEl.checked;
+      const black = { r: 0, g: 0, b: 0 }, white = { r: 255, g: 255, b: 255 };
+      return inv ? [white, black] : [black, white];
+    }
+    const samples = [];
+    const want = Math.min(nFrames, 24);
+    for (let i = 0; i < want; i++) {
+      if (cancelled) return null;
+      await seek((i + 0.5) * (nFrames / want) * step);
+      drawFrameToWork();
+      const d = wctx.getImageData(0, 0, W, H).data;
+      for (let p = 0; p < d.length; p += 4 * 17) samples.push([d[p], d[p + 1], d[p + 2]]);
+      setStatus("Building palette… " + Math.round((i / want) * 100) + "%");
+      setProgress((i / want) * 0.25);
+    }
+    return medianCut(samples, n);
+  }
+
+  // Pack one work-canvas frame into `out` for the chosen format.
+  // `err` carries Floyd–Steinberg error between rows when dithering.
+  function packFrame(fmt, out, pal) {
+    const img = wctx.getImageData(0, 0, W, H).data;
+    const dither = ditherEl.checked;
+    const inv = invertEl.checked;
+    const bpp = BPP[fmt];
+    const perByte = 8 / bpp;
+
+    if (fmt === "rgb565") {
+      let o = 0;
+      for (let i = 0; i < W * H; i++) {
+        let r = img[i * 4], g = img[i * 4 + 1], b = img[i * 4 + 2];
+        if (inv) { r = 255 - r; g = 255 - g; b = 255 - b; }
+        const c = to565(r, g, b);
+        out[o++] = c & 0xFF; out[o++] = c >> 8;      // little-endian
+      }
+      return;
+    }
+
+    // palettized: compute an index per pixel, pack LSB-first.
+    const idx = new Uint8Array(W * H);
+    if (fmt === "i1") {
+      const t = +threshEl.value;
+      if (dither) {
+        const buf = new Float32Array(W * H);
+        for (let i = 0; i < W * H; i++) buf[i] = luma(img[i * 4], img[i * 4 + 1], img[i * 4 + 2]);
+        for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+          const i = y * W + x, old = buf[i], nw = old < t ? 0 : 255, e = old - nw;
+          idx[i] = (nw ? 1 : 0) ^ (inv ? 1 : 0);
+          if (x + 1 < W) buf[i + 1] += e * 7 / 16;
+          if (y + 1 < H) {
+            if (x > 0) buf[i + W - 1] += e * 3 / 16;
+            buf[i + W] += e * 5 / 16;
+            if (x + 1 < W) buf[i + W + 1] += e * 1 / 16;
+          }
+        }
+      } else {
+        for (let i = 0; i < W * H; i++) {
+          const on = luma(img[i * 4], img[i * 4 + 1], img[i * 4 + 2]) >= t ? 1 : 0;
+          idx[i] = on ^ (inv ? 1 : 0);
+        }
+      }
+    } else {
+      // i4 / i8: nearest palette entry, optional error diffusion on RGB.
+      if (dither) {
+        const rb = new Float32Array(W * H), gb = new Float32Array(W * H), bb = new Float32Array(W * H);
+        for (let i = 0; i < W * H; i++) {
+          rb[i] = inv ? 255 - img[i * 4] : img[i * 4];
+          gb[i] = inv ? 255 - img[i * 4 + 1] : img[i * 4 + 1];
+          bb[i] = inv ? 255 - img[i * 4 + 2] : img[i * 4 + 2];
+        }
+        for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+          const i = y * W + x;
+          const pi = nearest(pal, rb[i], gb[i], bb[i]); idx[i] = pi;
+          const er = rb[i] - pal[pi].r, eg = gb[i] - pal[pi].g, eb = bb[i] - pal[pi].b;
+          const spread = (j, f) => { rb[j] += er * f; gb[j] += eg * f; bb[j] += eb * f; };
+          if (x + 1 < W) spread(i + 1, 7 / 16);
+          if (y + 1 < H) {
+            if (x > 0) spread(i + W - 1, 3 / 16);
+            spread(i + W, 5 / 16);
+            if (x + 1 < W) spread(i + W + 1, 1 / 16);
+          }
+        }
+      } else {
+        for (let i = 0; i < W * H; i++) {
+          let r = img[i * 4], g = img[i * 4 + 1], b = img[i * 4 + 2];
+          if (inv) { r = 255 - r; g = 255 - g; b = 255 - b; }
+          idx[i] = nearest(pal, r, g, b);
+        }
+      }
+    }
+
+    out.fill(0);
+    for (let i = 0; i < W * H; i++) {
+      const byte = (i / perByte) | 0, slot = i % perByte;   // LSB-first packing
+      out[byte] |= (idx[i] & ((1 << bpp) - 1)) << (slot * bpp);
+    }
+  }
+
+  // Paint `out` (packed frame) back onto the preview so the user sees the real
+  // quantised result.
+  function renderPreviewPacked(fmt, out, pal) {
+    const img = pctx.createImageData(W, H);
+    const bpp = BPP[fmt], perByte = 8 / bpp, mask = (1 << bpp) - 1;
+    for (let i = 0; i < W * H; i++) {
+      let r, g, b;
+      if (fmt === "rgb565") {
+        const c = out[i * 2] | (out[i * 2 + 1] << 8);
+        r = (c >> 8) & 0xF8; g = (c >> 3) & 0xFC; b = (c << 3) & 0xF8;
+      } else {
+        const v = (out[(i / perByte) | 0] >> ((i % perByte) * bpp)) & mask;
+        const p = pal[v] || { r: 0, g: 0, b: 0 };
+        r = p.r; g = p.g; b = p.b;
+      }
+      img.data[i * 4] = r; img.data[i * 4 + 1] = g; img.data[i * 4 + 2] = b; img.data[i * 4 + 3] = 255;
+    }
+    pctx.putImageData(img, 0, 0);
+  }
+
+  // Live preview of the current frame in the chosen format (no dithering, quick).
+  function renderPreview() {
+    const fmt = fmtEl.value, bpp = BPP[fmt];
+    const out = new Uint8Array((W * H * bpp) / 8);
+    const pal = fmt === "i1"
+      ? (invertEl.checked ? [{ r: 255, g: 255, b: 255 }, { r: 0, g: 0, b: 0 }]
+                          : [{ r: 0, g: 0, b: 0 }, { r: 255, g: 255, b: 255 }])
+      : fmt === "rgb565" ? null : previewPalette(fmt);
+    const savedDither = ditherEl.checked;
+    packFrame(fmt, out, pal);
+    renderPreviewPacked(fmt, out, pal);
+    void savedDither;
+  }
+  function previewPalette(fmt) {
+    const d = wctx.getImageData(0, 0, W, H).data, s = [];
+    for (let p = 0; p < d.length; p += 4 * 23) s.push([d[p], d[p + 1], d[p + 2]]);
+    return medianCut(s, fmt === "i8" ? 256 : 16);
+  }
+  [fmtEl, scaleEl, threshEl, ditherEl, invertEl].forEach((e) =>
+    e.addEventListener("input", () => { if (file) { drawFrameToWork(); renderPreview(); } }));
+
+  // ---- frame seeking -----------------------------------------------------
+
+  function seek(t) {
+    return new Promise((res) => {
+      const target = Math.min(Math.max(0, t), Math.max(0, vid.duration - 1e-3));
+      // Seeking to (almost) the current time fires no "seeked" event, so the
+      // first frame would hang forever; resolve on the next frame instead.
+      if (Math.abs(vid.currentTime - target) < 1e-4) {
+        requestAnimationFrame(() => res());
+        return;
+      }
+      let done = false;
+      const finish = () => { if (done) return; done = true; vid.removeEventListener("seeked", finish); res(); };
+      vid.addEventListener("seeked", finish);
+      setTimeout(finish, 2000); // safety: never stall the whole conversion
+      vid.currentTime = target;
+    });
+  }
+
+  // ---- audio -------------------------------------------------------------
+
+  async function extractWav() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    let buf;
+    try {
+      const raw = await file.arrayBuffer();
+      const ctx = new AC();
+      buf = await ctx.decodeAudioData(raw);
+      ctx.close();
+    } catch (e) { return null; } // no audio track / undecodable
+    const rate = 22050;
+    const n = Math.floor(buf.duration * rate);
+    const ch = buf.numberOfChannels;
+    const src = [];
+    for (let c = 0; c < ch; c++) src.push(buf.getChannelData(c));
+    const pcm = new Int16Array(n);
+    for (let i = 0; i < n; i++) {
+      const t = i / rate * buf.sampleRate;
+      const i0 = t | 0, frac = t - i0, i1 = Math.min(i0 + 1, buf.length - 1);
+      let s = 0;
+      for (let c = 0; c < ch; c++) s += src[c][i0] * (1 - frac) + src[c][i1] * frac;
+      s /= ch;
+      pcm[i] = Math.max(-32768, Math.min(32767, Math.round(s * 32767)));
+    }
+    return wavBlob(pcm, rate);
+  }
+
+  function wavBlob(pcm, rate) {
+    const bytes = pcm.length * 2;
+    const b = new ArrayBuffer(44 + bytes), v = new DataView(b);
+    const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    str(0, "RIFF"); v.setUint32(4, 36 + bytes, true); str(8, "WAVE");
+    str(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+    v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true);
+    v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    str(36, "data"); v.setUint32(40, bytes, true);
+    new Int16Array(b, 44).set(pcm);
+    return new Blob([b], { type: "audio/wav" });
+  }
+
+  // ---- BAV assembly ------------------------------------------------------
+
+  function bavHeader(fmt, frameCount, frameBytes, paletteCount, fps) {
+    const h = new ArrayBuffer(32), v = new DataView(h);
+    const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    str(0, "BAV1");
+    v.setUint16(4, W, true); v.setUint16(6, H, true);
+    v.setUint8(8, BPP[fmt]); v.setUint8(9, 0x01 /* LSB first */); v.setUint8(10, BAV_FMT[fmt]);
+    v.setUint32(12, Math.round(fps * 1000), true);
+    v.setUint32(16, frameCount, true);
+    v.setUint32(20, frameBytes, true);
+    v.setUint32(24, 32 + paletteCount * 2, true);
+    v.setUint16(28, paletteCount, true);
+    return new Uint8Array(h);
+  }
+
+  async function convert() {
+    if (running) return;
+    running = true; cancelled = false;
+    goBtn.disabled = true; cancelBtn.style.display = "";
+    revoke();
+    dlBav.setAttribute("aria-disabled", "true"); dlWav.setAttribute("aria-disabled", "true");
+
+    try {
+      const fmt = fmtEl.value, bpp = BPP[fmt];
+      const fps = Math.max(1, Math.min(30, +fpsEl.value || 15));
+      const step = 1 / fps;
+      const frameCount = Math.max(1, Math.floor(vid.duration * fps));
+      const frameBytes = (W * H * bpp) / 8;
+
+      setStatus("Decoding audio…");
+      const wav = await extractWav();
+
+      let pal = null, palBytes = new Uint8Array(0);
+      if (fmt !== "rgb565") {
+        pal = await buildPalette(fmt, frameCount, step);
+        if (cancelled) throw new Error("cancelled");
+        palBytes = new Uint8Array(pal.length * 2);
+        const pv = new DataView(palBytes.buffer);
+        for (let i = 0; i < pal.length; i++) pv.setUint16(i * 2, to1555(pal[i].r, pal[i].g, pal[i].b), true);
+      }
+      const paletteCount = pal ? pal.length : 0;
+
+      const header = bavHeader(fmt, frameCount, frameBytes, paletteCount, fps);
+      const parts = [header, palBytes];
+      const frame = new Uint8Array(frameBytes);
+
+      for (let f = 0; f < frameCount; f++) {
+        if (cancelled) throw new Error("cancelled");
+        await seek((f + 0.5) * step); // frame interval midpoint (never t=0)
+        drawFrameToWork();
+        packFrame(fmt, frame, pal);
+        parts.push(frame.slice());
+        if ((f & 7) === 0 || f === frameCount - 1) {
+          renderPreviewPacked(fmt, frame, pal);
+          setProgress(0.25 + (f / frameCount) * 0.75);
+          setStatus("Converting frame " + (f + 1) + " / " + frameCount + "…");
+          await new Promise((r) => setTimeout(r, 0)); // keep the UI responsive
+        }
+      }
+
+      const bavBlob = new Blob(parts, { type: "application/octet-stream" });
+      bavURL = URL.createObjectURL(bavBlob);
+      dlBav.href = bavURL; dlBav.setAttribute("aria-disabled", "false");
+      let msg = "Done — badapple.bav (" + (bavBlob.size / 1024 / 1024).toFixed(2) + " MB, " +
+                frameCount + " frames).";
+      if (wav) {
+        wavURL = URL.createObjectURL(wav);
+        dlWav.href = wavURL; dlWav.setAttribute("aria-disabled", "false");
+        msg += " Audio ready.";
+      } else {
+        msg += " No audio track found (video only).";
+      }
+      setProgress(1);
+      setStatus(msg + " Download both to a FAT32 USB stick.", "ok");
+    } catch (e) {
+      setStatus(e.message === "cancelled" ? "Cancelled." : ("Error: " + e.message), "err");
+      setProgress(0);
+    } finally {
+      running = false; goBtn.disabled = false; cancelBtn.style.display = "none";
+    }
+  }
+
+  function revoke() {
+    if (bavURL) URL.revokeObjectURL(bavURL);
+    if (wavURL) URL.revokeObjectURL(wavURL);
+    bavURL = wavURL = null;
+  }
+
+  goBtn.addEventListener("click", convert);
+  cancelBtn.addEventListener("click", () => { cancelled = true; });
+  refreshOpts();
+})();
+</script>
+</body>
+</html>

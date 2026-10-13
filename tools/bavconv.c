@@ -54,7 +54,7 @@ static void usage(FILE *out)
 {
     fprintf(out,
         "usage: %s [options] [INPUT]\n"
-        "Convert raw 8-bit grayscale frames (INPUT or stdin) to a 1-bpp .bav file.\n"
+        "Convert raw 8-bit grayscale frames (INPUT or stdin) to a 1-bpp .bav file.\nFor COLOUR video, use video-convert.html (runs in a browser).\n"
         "\n"
         "  -W WIDTH    frame width in pixels  (default 320, multiple of 8)\n"
         "  -H HEIGHT   frame height in pixels (default 240)\n"
@@ -346,10 +346,12 @@ int main(int argc, char **argv)
     h.height = (uint16_t)height;
     h.bpp = 1;
     h.flags = BAV_F_LSB_FIRST;
+    h.fmt = BAV_FMT_I1; /* 1 bpp B/W; colour conversion is video-convert.html */
     h.fps_milli = (uint32_t)fps_milli;
     h.frame_count = (uint32_t)(have_expected ? expected : 0ul);
     h.frame_bytes = (uint32_t)frame_bytes;
     h.data_offset = BAV_HEADER_LEN;
+    h.palette_count = 0; /* the player fills a black/white palette by default */
     bav_header_write(hdr, &h);
     if (fwrite(hdr, 1, sizeof hdr, out) != sizeof hdr)
         die("write error", strerror(errno));

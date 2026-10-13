@@ -1,8 +1,8 @@
 format=1
 product=calcscreen
-version=0.2.0
-date=2026-10-13T03:31:49Z
+version=0.3.0
+date=2026-10-13T03:31:51Z
 file=calcscreen-update.tar.gz
-size=239914
-sha256=adb7ad799f678c5e242782fe7ab29253b8d57895befc693621395d3dbac9637f
+size=242802
+sha256=5291aba5ec2217fa91694946d401403e0a23e1e6f5564e0bed03146b238d1947
 min_format=1

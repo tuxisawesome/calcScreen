@@ -211,16 +211,28 @@ To test from the dock shell or SSH:
 speaker-test -D hw:CARD=Headphones -c 2 -t wav -l 1
 ```
 
-## 6. Preparing Bad Apple
+## 6. Preparing a video (Bad Apple or any other)
 
-Run this on a PC, not on the Pi. See `tools/make_badapple.sh`:
+BADAPPLE is really a video player: it reads the pixel format from the file, so
+it plays colour videos as well as black-and-white ones. There are two ways to
+make the `badapple.bav` + `badapple.wav` pair.
+
+**Easiest — the browser converter.** Open `video-convert.html` (at the repo
+root) in any browser, pick a video, choose a colour format (High colour
+RGB565, 256/16 colours, or black & white), set the frame rate, and download
+both files. It runs entirely in your browser; nothing is uploaded.
+
+**Command line (black & white only).** On a PC, not the Pi:
 
 ```sh
 make -C tools
 tools/make_badapple.sh "Bad Apple.mp4" out/
 ```
 
-Copy `out/badapple.bav` and `out/badapple.wav` to the **root** of a USB drive.
+Either way, copy `badapple.bav` and `badapple.wav` to the **root** of a FAT32
+USB drive, plug it into the dock, and run BADAPPLE on the calculator. Full
+speed over USB is about 1.2 MB/s, so smaller formats and lower frame rates play
+more smoothly; the dock only resends the rows that changed.
 
 ## 7. Updating
 

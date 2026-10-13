@@ -11,7 +11,8 @@ Pi, and:
 
 The Pi boots straight into the dock (no login, no console text, fullscreen), is
 resilient to power loss, and does no real processing of its own — it is just an
-interface. The headline demo plays *Bad Apple* with sound from a USB drive.
+interface. The headline demo plays *Bad Apple* with sound from a USB drive, but
+the player handles colour video too — convert any clip with `video-convert.html`.
 
 See **docs/ARCHITECTURE.md** for how it works, **docs/PROTOCOL.md** for the wire
 format, and **pi/README.md** for Raspberry Pi setup.
@@ -25,6 +26,7 @@ format, and **pi/README.md** for Raspberry Pi setup.
 | `calc/` | calculator programs: embedded USB driver (`hal_ce`), SDK, DOCK, BADAPPLE |
 | `pi/` | Raspberry Pi OS setup (installer, systemd, udev, boot config) |
 | `tools/` | `bavconv` and `make_badapple.sh` (run on a PC to prepare the demo) |
+| `video-convert.html` | in-browser converter: any (colour) video → `badapple.bav` + `.wav` |
 | `tests/` | host unit tests and the end-to-end simulation |
 | `docs/` | protocol, architecture and hardware references |
 
