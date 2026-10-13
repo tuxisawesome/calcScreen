@@ -1,0 +1,11 @@
+build/
+obj/
+bin/
+*.o
+*.a
+*.8xp
+*.8xv
+*.8ek
+*.map
+*.elf
+/tests/out/
