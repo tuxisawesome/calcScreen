@@ -63,6 +63,8 @@ typedef struct dock_dev {
     uint32_t dock_id;
     uint16_t host_caps;
     uint8_t seq;
+    bool pong_pending;  /* PING received while the pipe was busy */
+    uint8_t pong_seq;
 
     /* receive */
     dock_rx_t rx;
@@ -97,7 +99,9 @@ typedef struct dock_dev {
     uint8_t req_seq;
     uint8_t req_type;
     uint8_t req_status;
-    uint8_t resp[64];        /* fixed part of the response (after req hdr) */
+    /* fixed part of the response (after req hdr); sized for the largest
+     * non-tail frame, e.g. FS_READDIR with a 255-character name */
+    uint8_t resp[DOCK_DEV_RXBUF - DOCK_RESP_HDR_LEN];
     size_t resp_len;
     uint8_t *resp_tail;      /* where bulk response data goes */
     size_t resp_tail_cap;

@@ -139,9 +139,9 @@ static void on_frame(void *user, const dock_frame_t *f, const uint8_t *buf,
         break;
     }
     case DOCK_T_PING:
-        /* Answered opportunistically: only when the pipe is free. */
-        if (!d->tx_busy)
-            tx_start(d, DOCK_T_PONG, f->seq, 0, NULL, 0);
+        /* Answered by dock_dev_poll() as soon as the pipe is free. */
+        d->pong_seq = f->seq;
+        d->pong_pending = true;
         break;
     case DOCK_T_SCR_REFRESH:
         screen_restart(d);
@@ -309,6 +309,7 @@ static void link_down(dock_dev_t *d)
 {
     d->state = DOCK_DEV_OFFLINE;
     d->tx_busy = false;
+    d->pong_pending = false;
     dock_rx_reset(&d->rx);
     if (d->req_active && !d->req_done) {
         d->req_status = DOCK_E_DISCONNECTED;
@@ -348,6 +349,11 @@ void dock_dev_poll(dock_dev_t *d)
     if (d->tx_busy)
         return;
 
+    if (d->pong_pending) {
+        d->pong_pending = false;
+        tx_start(d, DOCK_T_PONG, d->pong_seq, 0, NULL, 0);
+        return;
+    }
     if (d->state == DOCK_DEV_HELLO &&
         (uint32_t)(dock_dhal_ms(d->hal) - d->last_hello_ms) >= HELLO_RETRY_MS) {
         send_hello(d);

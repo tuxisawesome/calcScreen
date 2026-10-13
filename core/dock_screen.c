@@ -17,7 +17,7 @@ uint16_t dock_row_bytes(uint16_t width, uint8_t fmt)
 
 uint16_t dock_palette_size(uint8_t fmt)
 {
-    return fmt <= DOCK_PIX_I8 ? (uint16_t)(1u << dock_pix_bits(fmt)) : 0;
+    return (uint16_t)(fmt <= DOCK_PIX_I8 ? 1u << dock_pix_bits(fmt) : 0u);
 }
 
 uint32_t dock_row_hash_c(const uint8_t *row, size_t n)

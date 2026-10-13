@@ -380,11 +380,12 @@ void dock_ui_screen_menu(const dock_canvas_t *c, const char *title,
             text_n(c, MARGIN, y + (ROW_H - GLYPH) / 2, it->label, cols,
                    DOCK_UI_FG, 1);
     }
-    /* scroll hints */
+    /* scroll hints, in the right margin of the first / last visible row */
     if (first > 0)
-        glyph(c, w - MARGIN + 2, top - 6, '^', DOCK_UI_DIM, 1);
+        glyph(c, w - MARGIN + 3, top + (ROW_H - GLYPH) / 2, '^', DOCK_UI_DIM, 1);
     if (first + visible < n)
-        glyph(c, w - MARGIN + 2, bottom - 6, 'v', DOCK_UI_DIM, 1);
+        glyph(c, w - MARGIN + 3, top + (visible - 1) * ROW_H + (ROW_H - GLYPH) / 2,
+              'v', DOCK_UI_DIM, 1);
     footer_bar(c, footer);
 }
 

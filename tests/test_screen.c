@@ -339,7 +339,7 @@ static void t_rx_indexed(void)
 static void t_rx_invalid(void)
 {
     uint8_t p[600];
-    uint8_t row[32] = {0};
+    uint8_t row[64] = {0};
     rx_setup(16, 4, DOCK_PIX_RGB565, 0);
     /* bad modes */
     CHECK_EQ(dock_scr_rx_mode(&rx, p, mode_payload(p, 16, 4, DOCK_PIX_COUNT, 0)),
