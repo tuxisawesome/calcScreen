@@ -147,7 +147,15 @@ typedef struct {
     uint8_t rx_pkt[MPS];       /* DMA landing pad (one packet) */
 } ctx_t;
 
+#ifdef DOCK_RESIDENT_USB_CTX
+/* Resident flash-app build (calc/resident): the USB state must outlive the
+ * installer program, so it lives at a fixed RAM address (the OS USB area) that
+ * is free while our driver owns the controller, instead of in reclaimable
+ * program bss. See calc/resident/src/resident.h and docs/RESIDENT.md. */
+#define g_ctx (*(ctx_t *)(DOCK_RESIDENT_USB_CTX))
+#else
 static ctx_t g_ctx;
+#endif
 
 /* RxZlp near-atomic read-and-clear (dma_ce.S). */
 extern void halce_rxzlp_clear(void);
