@@ -23,7 +23,7 @@ RATE=22050
 W=320
 H=240
 
-usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "make_badapple: error: $*" >&2; exit 1; }
 
 while getopts ":f:t:dr:h" opt; do
@@ -44,7 +44,7 @@ IN=$1
 OUT=$2
 [[ -f $IN ]] || die "input video '$IN' not found"
 [[ $FPS =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "invalid fps '$FPS'"
-[[ $THRESH =~ ^[0-9]+$ ]] && ((THRESH <= 255)) || die "invalid threshold '$THRESH'"
+if ! [[ $THRESH =~ ^[0-9]+$ ]] || ((THRESH > 255)); then die "invalid threshold '$THRESH'"; fi
 [[ $RATE =~ ^[0-9]+$ ]] || die "invalid sample rate '$RATE'"
 
 if [[ -r /proc/device-tree/model ]] && grep -qi raspberry /proc/device-tree/model 2>/dev/null; then

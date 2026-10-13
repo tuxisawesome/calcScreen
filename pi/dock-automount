@@ -19,6 +19,7 @@
 #   fsck      systemd-mount runs fsck -a first, which repairs a FAT "dirty"
 #             bit or an ext4 journal after an unclean removal
 set -euo pipefail
+export LC_ALL=C
 
 MEDIA=${DOCK_MEDIA_DIR:-/media/dock}
 STATE=/run/dock-automount
@@ -44,8 +45,9 @@ sanitize() {
     s=${s//[^A-Za-z0-9_-]/_}
     # no leading '-' (looks like an option) and no leading/trailing '_'
     while [[ $s == [-_]* ]]; do s=${s:1}; done
+    s=${s:0:$MAXLEN}
     while [[ $s == *_ ]]; do s=${s%_}; done
-    printf '%s' "${s:0:$MAXLEN}"
+    printf '%s' "$s"
 }
 
 # Parent disk of a block device (the device itself for whole-disk filesystems).
@@ -150,8 +152,8 @@ do_remove() {
         systemd-mount --umount "$mp" 2>/dev/null || umount -l "$mp" 2>/dev/null || true
     fi
     # Remove the now-empty directory so a stale name never shadows a drive.
-    local i
-    for i in 1 2 3 4 5 6 7 8 9 10; do
+    local _
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
         mountpoint -q "$mp" || break
         sleep 0.5
     done

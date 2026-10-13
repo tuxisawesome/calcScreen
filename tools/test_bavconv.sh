@@ -140,6 +140,7 @@ if "$BAVCONV" -q -f 29.97 "$work/in3.raw" | cat > "$work/b.bav" &&
 else bad "file input, piped output"; fi
 
 # 4. Non-seekable output with unknown count must fail cleanly.
+# shellcheck disable=SC2002 # the point is a non-seekable pipe on stdin
 if cat "$work/in3.raw" | "$BAVCONV" -q 2>/dev/null | cat > /dev/null; then
     bad "pipe->pipe should be rejected"
 else ok "pipe->pipe rejected"; fi

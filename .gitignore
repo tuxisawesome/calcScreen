@@ -9,3 +9,6 @@ bin/
 *.map
 *.elf
 /tests/out/
+
+# built converter binary
+/tools/bavconv

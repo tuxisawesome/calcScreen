@@ -1,0 +1,26 @@
+# calcScreen - lines for config.txt (/boot/firmware/config.txt on Bookworm and
+# Trixie, /boot/config.txt on older releases). pi/install.sh adds exactly this
+# as a marked block at the END of the file; use this snippet only if you set
+# the Pi up by hand. Keep it at the end, after an [all] line, so no
+# conditional section ([pi4], [cm4], ...) swallows it.
+#
+# If config.txt already contains dtoverlay=vc4-kms-v3d (the default), do not
+# add it a second time.
+
+[all]
+# no rainbow splash, no boot delay
+disable_splash=1
+boot_delay=0
+# full KMS graphics driver: dockd draws with DRM/KMS and uses the HVS scaler
+dtoverlay=vc4-kms-v3d
+# hardware watchdog (systemd feeds it: RuntimeWatchdogSec=15)
+dtparam=watchdog=on
+# 3.5 mm analog audio (HDMI audio works without it)
+dtparam=audio=on
+
+# Optional:
+# turn off the Bluetooth hardware (frees the PL011 UART, saves a little power)
+#dtoverlay=disable-bt
+# pretend a monitor is connected even if it is off at boot (legacy firmware
+# option; with full KMS see README "No picture" for the video= alternative)
+#hdmi_force_hotplug=1

@@ -1,0 +1,24 @@
+# calcScreen - kernel command line (cmdline.txt, /boot/firmware/cmdline.txt on
+# Bookworm/Trixie). cmdline.txt MUST stay a SINGLE line: never add line breaks.
+# This file is documentation; do not copy these comment lines.
+#
+# 1. Remove:   console=tty1           (tty1 belongs to dockd)
+# 2. Keep:     root=... rootfstype=... rootwait fsck.repair=yes and anything
+#              else that is already there (console=serial0,115200, cfg80211...,
+#              overlayroot=tmpfs once the overlay is enabled)
+# 3. Append (on the same line, separated by single spaces):
+console=tty3 quiet loglevel=0 logo.nologo vt.global_cursor_default=0 systemd.show_status=0 rd.systemd.show_status=0 rd.udev.log_level=0 udev.log_priority=0 consoleblank=0
+#
+# What they do:
+#   console=tty3                 kernel messages go to tty3, never on screen
+#   quiet loglevel=0             no kernel log on the console
+#   logo.nologo                  no raspberry logos
+#   vt.global_cursor_default=0   no blinking text cursor
+#   systemd.show_status=0        no systemd "[  OK  ] Started ..." lines
+#   rd.systemd.show_status=0     same inside the initramfs
+#   rd.udev.log_level=0          no udev messages (initramfs)
+#   udev.log_priority=0          no udev messages
+#   consoleblank=0               the console never blanks the screen
+#
+# Example of a complete line (your PARTUUID differs!):
+#   console=serial0,115200 root=PARTUUID=4e639091-02 rootfstype=ext4 fsck.repair=yes rootwait console=tty3 quiet loglevel=0 logo.nologo vt.global_cursor_default=0 systemd.show_status=0 rd.systemd.show_status=0 rd.udev.log_level=0 udev.log_priority=0 consoleblank=0
