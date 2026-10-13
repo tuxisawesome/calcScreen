@@ -33,9 +33,14 @@ bool resident_bringup(void)
     /* halce_init() takes the USB controller from TI-OS, masks the OS USB and
      * timer-3 interrupts, and leaves interrupts disabled; the caller re-enables
      * them (keeping the masks) before handing control back to TI-OS. */
+    char code[DOCK_JOIN_LEN + 1];
     if (!halce_init())
         return false;
     dock_dev_init(R_DEV, halce_hal(), halce_calc_id());
+    /* Reuse the join code the DOCK app saved (archived DOCKCFG AppVar), so a
+     * dock that requires one still accepts us with no UI of our own. */
+    if (halce_cfg_load_join(code, sizeof code))
+        dock_dev_set_join_code(R_DEV, code);
     R_INJECTED = 0;
     R_LASTPUSH = time_ce_ms();
     return true;
