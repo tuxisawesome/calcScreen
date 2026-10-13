@@ -33,6 +33,7 @@
 #define LCD_W 320u
 #define LCD_H 240u
 #define VRAM_BYTES (LCD_W * LCD_H * 2u) /* one 16-bpp frame = the LCD's RAM */
+#define CONNECT_TIMEOUT_MS 8000u /* HELLO retries every ~1 s; allow a few */
 
 /* PL111 LCD control register fields (sys/lcd.h, lcd_Control at 0xE30018).
  * bits [3:1] = LcdBpp code, bit 8 = BGR, bit 10 = BEPO (sub-byte pixel order). */
@@ -54,17 +55,50 @@ static void message(const char *line1, const char *line2)
         ;
 }
 
+/* Local fallback clock when the dock cannot play audio. */
+static uint32_t clock_ms(void)
+{
+    return (uint32_t)((uint64_t)clock() * 1000u / CLOCKS_PER_SEC);
+}
+
+/* Service the link until the dock handshake completes. dock_open() returns
+ * before HELLO/WELCOME finishes, so a bare dock_status() check right after it
+ * always reports "disconnected" even when a dock is attached (it is still in
+ * the HELLO state). Poll dock_service() until we are either RUNNING, told a
+ * join code is needed, timed out, or the user quits.
+ *
+ * Returns DOCK_OK when connected; DOCK_E_JOIN_REQUIRED/BAD when the dock wants
+ * a join code (the user must run DOCK first to enter it); a negative value if
+ * the user pressed CLEAR/ON to cancel; DOCK_E_DISCONNECTED on timeout. */
+static int dock_connect_wait(dock_t *d)
+{
+    uint32_t start = clock_ms();
+    bool drawn = false;
+    for (;;) {
+        int st;
+        dock_service(d);
+        st = dock_status(d);
+        if (st == DOCK_OK || st == DOCK_E_JOIN_REQUIRED || st == DOCK_E_JOIN_BAD)
+            return st;
+        if (os_GetCSC() == sk_Clear || kb_On)
+            return -1;
+        if (clock_ms() - start > CONNECT_TIMEOUT_MS)
+            return DOCK_E_DISCONNECTED;
+        if (!drawn) { /* draw once; the handshake is usually sub-second */
+            os_ClrHome();
+            os_PutStrFull("Connecting to");
+            os_NewLine();
+            os_PutStrFull("calcScreen dock...");
+            drawn = true;
+        }
+    }
+}
+
 /* frame = pos_ms * fps_milli / 1e6 without overflowing 32 bits. */
 static uint32_t frame_at(uint32_t pos_ms, uint32_t fps_milli)
 {
     uint32_t sec = pos_ms / 1000u, ms = pos_ms % 1000u;
     return sec * fps_milli / 1000u + ms * fps_milli / 1000000u;
-}
-
-/* Local fallback clock when the dock cannot play audio. */
-static uint32_t clock_ms(void)
-{
-    return (uint32_t)((uint64_t)clock() * 1000u / CLOCKS_PER_SEC);
 }
 
 /* The PL111 LcdBpp code for a BAV pixel format (bits [3:1] of lcd_Control). */
@@ -102,7 +136,17 @@ int main(void)
         message("DOCK not installed.", "Run DOCK first.");
         return 1;
     }
-    if (dock_status(d) != DOCK_OK) {
+    rc = dock_connect_wait(d);
+    if (rc == DOCK_E_JOIN_REQUIRED || rc == DOCK_E_JOIN_BAD) {
+        dock_close(d);
+        message("Run DOCK first to", "enter the join code.");
+        return 1;
+    }
+    if (rc < 0) { /* user cancelled while connecting */
+        dock_close(d);
+        return 0;
+    }
+    if (rc != DOCK_OK) {
         dock_close(d);
         message("Not connected to a", "calcScreen dock.");
         return 1;

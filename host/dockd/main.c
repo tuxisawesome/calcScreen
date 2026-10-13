@@ -637,7 +637,7 @@ static int loop_timeout(dockd_t *d, uint64_t now)
     if (d->shell_active || d->reboot_pid > 0)
         tmin(&t, 200);
     if (d->mode == MODE_DUSB && !d->settings_open && !d->shell_active)
-        t = 0; /* the DUSB step itself is the (bounded) wait */
+        tmin(&t, dusb_session_timeout_ms(&d->dusb, now));
     return t;
 }
 
@@ -686,7 +686,7 @@ static void run(dockd_t *d, bool display_fallback)
         audio_pump(d->au);
 
         if (d->mode == MODE_DUSB && !d->settings_open && !d->shell_active &&
-            dusb_session_step(&d->dusb)) {
+            dusb_session_step(&d->dusb, now)) {
             display_damage(d->disp, DISPLAY_MIRROR, 0, DISPLAY_H);
             display_frame_end(d->disp);
             dockd_redraw(d); /* the view may switch to the mirror */
