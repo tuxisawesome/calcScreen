@@ -17,10 +17,22 @@ DESTDIR ?=
 CC         ?= cc
 PKG_CONFIG ?= pkg-config
 
+# Build version, baked into dockd (--version, the diagnostics overlay and the
+# USB updater's compare). Comes from the repo-root VERSION file; a short git
+# hash is appended when this is a git checkout.
+VERSION    := $(shell cat $(ROOT)/VERSION 2>/dev/null || echo 0.0.0)
+GITHASH    := $(shell git -C $(ROOT) rev-parse --short HEAD 2>/dev/null)
+ifneq ($(GITHASH),)
+DOCKD_VERSION := $(VERSION)+g$(GITHASH)
+else
+DOCKD_VERSION := $(VERSION)
+endif
+
 WARN     := -Wall -Wextra -Werror
 CFLAGS   ?= -O2
 CPPFLAGS += -I$(ROOT)/core -I$(ROOT)/host/hal_linux -I$(ROOT)/host/dockd \
-            -I$(ROOT)/host/hal_sim -MMD -MP
+            -I$(ROOT)/host/hal_sim -MMD -MP \
+            -DDOCKD_VERSION='"$(DOCKD_VERSION)"'
 PKGS     := libdrm alsa libusb-1.0 libcurl
 PKG_CFLAGS := $(shell $(PKG_CONFIG) --cflags $(PKGS))
 PKG_LIBS   := $(shell $(PKG_CONFIG) --libs $(PKGS))

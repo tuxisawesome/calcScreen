@@ -17,6 +17,7 @@
 #include "dockd.h"
 #include "dock_keymap.h"
 #include "util.h"
+#include "version.h"
 
 #include <errno.h>
 #include <getopt.h>
@@ -47,6 +48,7 @@ static void usage(FILE *f)
 {
     fputs("usage: dockd [options]\n"
           "  -v, --verbose          log to stderr\n"
+          "  -V, --version          print the dockd version and exit\n"
           "  --drives DIR           USB drive mount root (/media/dock)\n"
           "  --state DIR            settings directory (/var/lib/dockd)\n"
           "  --display SPEC         drm | drm:/dev/dri/cardN | none | ppm:PATH (drm)\n"
@@ -75,6 +77,7 @@ static bool parse_opts(int argc, char **argv, dockd_opts_t *o)
     static const struct option lo[] = {
         {"verbose", no_argument, NULL, 'v'},
         {"help", no_argument, NULL, 'h'},
+        {"version", no_argument, NULL, 'V'},
         {"drives", required_argument, NULL, O_DRIVES},
         {"state", required_argument, NULL, O_STATE},
         {"display", required_argument, NULL, O_DISPLAY},
@@ -107,10 +110,11 @@ static bool parse_opts(int argc, char **argv, dockd_opts_t *o)
     o->usb_sysfs = "/sys/bus/usb/devices";
     o->once_frames = 0;
 
-    while ((c = getopt_long(argc, argv, "vh", lo, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "vhV", lo, NULL)) != -1) {
         switch (c) {
         case 'v': log_set_verbose(true); break;
         case 'h': usage(stdout); exit(0);
+        case 'V': puts(DOCKD_VERSION); exit(0);
         case O_DRIVES: o->drives = optarg; break;
         case O_STATE: o->state = optarg; break;
         case O_DISPLAY: o->display = optarg; break;

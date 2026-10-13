@@ -17,12 +17,18 @@
 extern "C" {
 #endif
 
-#define DOCK_SETTINGS_VERSION 1u
+#define DOCK_SETTINGS_VERSION 2u
 #define DOCK_PW_SALT_LEN 16u
 #define DOCK_PW_ITERATIONS 20000u
 #define DOCK_SETTINGS_MAX_RECORD 512u
 
 enum dock_audio_out { DOCK_AUDIO_HDMI = 0, DOCK_AUDIO_JACK = 1 };
+
+/* Performance-overlay section bits (perf_overlay_sections). */
+#define DOCK_OVL_FPS 0x01u  /* FPS, throughput, rows/frame, link mode */
+#define DOCK_OVL_CONN 0x02u /* calc id, driver, vid/pid, join, resyncs */
+#define DOCK_OVL_SYS 0x04u  /* CPU, temperature, memory, uptime, version */
+#define DOCK_OVL_ALL (DOCK_OVL_FPS | DOCK_OVL_CONN | DOCK_OVL_SYS)
 
 typedef struct dock_settings {
     uint8_t wifi_enabled;     /* radio on */
@@ -37,6 +43,9 @@ typedef struct dock_settings {
     uint8_t admin_hash[DOCK_SHA256_LEN];
     uint32_t admin_iterations;
     char wifi_ssid[33];       /* last network chosen (password lives in NM) */
+    /* v2 fields (appended; absent in v1 records, which load the defaults). */
+    uint8_t perf_overlay;          /* diagnostics performance overlay on */
+    uint8_t perf_overlay_sections; /* DOCK_OVL_* bitmask of enabled groups */
 } dock_settings_t;
 
 typedef struct dock_store_io {

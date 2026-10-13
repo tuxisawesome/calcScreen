@@ -13,3 +13,8 @@ bin/
 # built converter binary
 /tools/bavconv
 /build/
+
+# published release artifacts are committed
+!dist/
+!dist/
+!dist/**

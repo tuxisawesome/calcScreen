@@ -3,6 +3,7 @@
 # ----------------------------
 NAME = DOCK
 DESCRIPTION = "calcScreen dock manager"
+COMMENT = "calcScreen"
 COMPRESSED = NO
 CFLAGS = -Wall -Wextra -Oz
 CXXFLAGS = -Wall -Wextra -Oz

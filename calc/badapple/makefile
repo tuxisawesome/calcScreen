@@ -3,6 +3,7 @@
 # ----------------------------
 NAME = BADAPPLE
 DESCRIPTION = "Bad Apple via calcScreen dock"
+COMMENT = "calcScreen"
 COMPRESSED = NO
 CFLAGS = -Wall -Wextra -Oz
 CXXFLAGS = -Wall -Wextra -Oz

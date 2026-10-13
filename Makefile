@@ -1,7 +1,7 @@
 # calcScreen top-level makefile. Each part has its own makefile; this just
 # drives them. See README.md.
 
-.PHONY: all test host calc tools sim e2e clean help
+.PHONY: all test host calc tools sim e2e dist clean help
 
 help:
 	@echo "calcScreen targets:"
@@ -10,6 +10,7 @@ help:
 	@echo "  make calc   - build the calculator programs (needs the CE C toolchain)"
 	@echo "  make tools  - build bavconv (the Bad Apple converter)"
 	@echo "  make e2e    - build host + run the end-to-end simulation"
+	@echo "  make dist   - build and refresh the published artifacts in dist/"
 	@echo "  make all    - test + host + tools (everything that builds without CEDEV)"
 	@echo "  make clean  - remove all build output"
 
@@ -21,6 +22,9 @@ test:
 
 host:
 	$(MAKE) -C host
+
+dist:
+	bash tools/make_dist.sh
 
 tools:
 	$(MAKE) -C tools

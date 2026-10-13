@@ -17,6 +17,11 @@
  *   u8 audio_out, u8 volume, char join_code[6], u32 dock_id, u8 admin_set,
  *   u8 admin_salt[16], u8 admin_hash[32], u32 admin_iterations,
  *   u8 ssid_len, char ssid[ssid_len]
+ *
+ * Body additions in version 2 (read only when present, so v1 records still
+ * load and get the defaults):
+ *
+ *   u8 perf_overlay, u8 perf_overlay_sections
  */
 #include "dock_settings.h"
 #include "dock_proto.h"
@@ -68,6 +73,8 @@ void dock_settings_defaults(dock_settings_t *s, uint32_t random32)
     s->audio_out = DOCK_AUDIO_HDMI;
     s->volume = 80;
     s->dock_id = random32 | 1u;
+    s->perf_overlay = 0;
+    s->perf_overlay_sections = DOCK_OVL_ALL;
     memcpy(seed, "join", 4);
     dock_put_u32(seed + 4, random32);
     dock_sha256(seed, sizeof seed, h);
@@ -104,6 +111,8 @@ size_t dock_settings_encode(const dock_settings_t *s, uint32_t seq,
     dock_wr_u32(&w, s->admin_iterations);
     dock_wr_u8(&w, (uint8_t)ssid_len);
     dock_wr_bytes(&w, s->wifi_ssid, ssid_len);
+    dock_wr_u8(&w, s->perf_overlay ? 1u : 0u);       /* v2 */
+    dock_wr_u8(&w, s->perf_overlay_sections);        /* v2 */
 
     if (w.overflow || w.len + REC_CRC_LEN > cap)
         return 0;
@@ -169,7 +178,15 @@ bool dock_settings_decode(const uint8_t *buf, size_t n, dock_settings_t *s,
         return false;
     memcpy(t.wifi_ssid, dock_rd_ptr(&r), ssid_len);
     t.wifi_ssid[ssid_len] = '\0';
-    /* Fields of later versions would be read here when version >= 2. */
+
+    /* v2 fields: present only when version >= 2 and the bytes are there.
+     * A v1 record (or a truncated v2 body) keeps the defaults set below. */
+    t.perf_overlay = 0;
+    t.perf_overlay_sections = DOCK_OVL_ALL;
+    if (version >= 2u && dock_rd_left(&r) >= 2u) {
+        t.perf_overlay = dock_rd_u8(&r) ? 1u : 0u;
+        t.perf_overlay_sections = dock_rd_u8(&r);
+    }
 
     if (!join_code_valid(t.join_code) || t.audio_out > DOCK_AUDIO_JACK)
         return false;
