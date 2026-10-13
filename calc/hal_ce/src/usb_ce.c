@@ -807,9 +807,20 @@ bool halce_init(void)
 
     memset(&g_ctx, 0, sizeof g_ctx);
     time_ce_init(); /* millisecond clock, needed for the delays below */
+    int_Disable(); /* the CRT is already di; make it explicit for the session */
+
+    /* Enable the register window (SPEC section 0.3 / gotcha 2) BEFORE reading
+     * any controller register: with the disable bit + Unplug set, 0x044-0x1C7
+     * (which includes OTGCSR at 0x082) read 0. Then verify the device role
+     * while no TI-OS state has been disturbed yet, so a host-role abort is a
+     * clean no-op. */
+    wr8(R_DMACTRL_B3, 0x00);
+    if (!(rd8(R_OTGCSR_B2) & 0x10)) { /* bit20 Role: 0 = host (mini-A plug) */
+        time_ce_cleanup();
+        return false; /* the calc is a host here; it cannot act as a device */
+    }
 
     /* --- A. Fence off TI-OS (SPEC 2.1 A) --- */
-    int_Disable(); /* the CRT is already di; make it explicit for the session */
     m0 = rd8(R_MPIMASK + 0);
     m1 = rd8(R_MPIMASK + 1);
     m2 = rd8(R_MPIMASK + 2);
@@ -824,7 +835,6 @@ bool halce_init(void)
     wr8(OS_FLAGS_1B, (uint8_t)(rd8(OS_FLAGS_1B) | 0x20u)); /* mirror usbdrvce */
 
     /* --- B. Quiesce the host half of the OTG controller (SPEC 2.1 B) --- */
-    wr8(R_DMACTRL_B3, 0x00); /* clear the register-window-disable bit (gotcha 2) */
     wr8(R_USBINTEN, 0x00);
     wr8(R_USBCMD, 0x00);     /* RunStop = 0 */
     t0 = time_ce_ms();
@@ -832,11 +842,7 @@ bool halce_init(void)
            (uint32_t)(time_ce_ms() - t0) < 5u) /* HcHalted, bounded ~5 ms */
         ;
 
-    /* --- C. Require device (B) role; do not drive VBUS (SPEC 2.1 C) --- */
-    if (!(rd8(R_OTGCSR_B2) & 0x10)) { /* bit20 Role: 0 = host */
-        time_ce_cleanup();
-        return false; /* a mini-A plug makes the calc a host: cannot be a device */
-    }
+    /* --- C. OTG: do not drive VBUS, stay a B-device (SPEC 2.1 C) --- */
     wr8(R_OTGISR_B1, 0x03); /* clear stale RoleChg | IdChg */
     wr8(R_OTGCSR_B0, (uint8_t)(rd8(R_OTGCSR_B0) & ~0x80u));            /* ASrpEn=0 */
     wr8(R_OTGCSR_B0, (uint8_t)((rd8(R_OTGCSR_B0) | 0x20u) & ~0x10u));  /* ABusDrop=1,ABusReq=0 */
