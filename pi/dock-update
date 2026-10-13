@@ -67,7 +67,9 @@ run() {
 # tty, else stderr).
 console_fd() {
     if [[ -n ${DOCK_CONSOLE:-} ]]; then echo "$DOCK_CONSOLE"
-    elif [[ -w /dev/tty ]]; then echo /dev/tty
+    # -w only checks permissions; /dev/tty may still fail to open with no
+    # controlling terminal, so probe an actual open before choosing it.
+    elif ( : >>/dev/tty ) 2>/dev/null; then echo /dev/tty
     else echo /dev/stderr; fi
 }
 CONSOLE=$(console_fd)
