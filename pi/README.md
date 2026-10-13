@@ -5,8 +5,8 @@ dock. When it's done, the Pi:
 
 * boots straight into `dockd`, with no login prompt and no console text,
 * survives having its power pulled at any time,
-* keeps your settings and Wi-Fi networks across reboots, if you add the small
-  `dockdata` partition (step 3).
+* keeps your settings and Wi-Fi networks across reboots automatically — no
+  repartitioning needed (step 3).
 
 You need:
 
@@ -57,40 +57,45 @@ You need:
 6. Log in from your PC with `ssh <user>@calcscreen.local`. If `.local` names
    don't work on your network, use the IP address shown in your router.
 
-## 3. Optional, recommended: the `dockdata` partition
+## 3. Where settings are stored (automatic)
 
-With the read-only overlay on, everything written to the SD card lands in RAM
-and is gone after a reboot. The admin password, join code, audio choice and
-Wi-Fi networks have to be stored somewhere real. That place is a small ext4
-partition labelled **`dockdata`**:
+With the read-only overlay on, everything written to the root filesystem lands
+in RAM and is gone after a reboot. The admin password, join code, audio choice
+and Wi-Fi networks have to be stored somewhere real — and the installer sets
+this up for you, **no repartitioning and no second computer needed**.
 
-* It is mounted at `/var/lib/dockd` with the `sync`, `dirsync`, `noatime` and
-  `data=journal` options.
-* dockd writes its settings to two CRC-checked A/B slots, so a save
-  interrupted by a power cut always leaves the previous settings intact.
+By default it creates a 64 MiB ext4 **image file** on the boot partition,
+`/boot/firmware/dockdata.img`, and mounts it at `/var/lib/dockd`:
+
+* The boot partition is left writable (only the root filesystem is the
+  read-only overlay). Because the image is a fixed, pre-allocated file, writing
+  inside it never changes the boot partition's FAT metadata, so pulling the
+  power can't corrupt it.
+* It is mounted with `loop`, `sync`, `dirsync`, `noatime` and `data=journal`;
+  ext4's journal recovers a torn write, and dockd additionally writes its
+  settings to two CRC-checked A/B slots, so an interrupted save always leaves
+  the previous settings intact.
 * NetworkManager's connection files (`/etc/NetworkManager/system-connections`)
-  and its state (`/var/lib/NetworkManager`) are bind-mounted from this
-  partition. Wi-Fi networks you add, and whether Wi-Fi is on or off, survive
-  reboots.
+  and its state (`/var/lib/NetworkManager`) are bind-mounted from the image, so
+  Wi-Fi networks and the radio on/off state survive reboots. The Wi-Fi you set
+  in Imager is copied in automatically.
 
-**Without dockdata the dock still works**, but settings and Wi-Fi changes made
-after installing are lost at every reboot. The installer warns about this.
-The Wi-Fi network you set in Imager keeps working, because it was saved before
-the overlay was switched on.
+There is nothing to do here — it just works after `./install.sh`. To change the
+image size, edit `DATA_IMG_MIB` at the top of `install.sh` before installing
+(or delete `/boot/firmware/dockdata.img` while unlocked and re-run the
+installer).
 
-The Pi can't shrink its own root partition while it is running from it. Do this
-once, after the first boot (step 2) and before running the installer:
+### Optional: a dedicated `dockdata` partition instead
 
-1. Shut the Pi down with `sudo poweroff`.
-2. Put the card in a Linux PC.
-3. Run the commands below.
-   * Find the card with `lsblk` and replace `/dev/sdX` with it.
-   * In a built-in SD reader the card is usually `/dev/mmcblk0`, and the
-     partitions are `/dev/mmcblk0p2` and `/dev/mmcblk0p3`.
-   * **Double-check the device name**: the wrong one erases another disk.
+If you prefer a real partition (e.g. you want it larger, or on a separate
+disk), create an ext4 partition labelled **`dockdata`** and the installer will
+use it automatically in place of the image, and make `/boot` read-only too.
+Easiest is free space at the end of the card — run `sudo ./install.sh
+--make-data-partition` (it never shrinks an existing partition). To make room
+by shrinking the root partition, do it once on a Linux PC:
 
 ```sh
-DEV=/dev/sdX; P2=${DEV}2; P3=${DEV}3
+DEV=/dev/sdX; P2=${DEV}2; P3=${DEV}3                      # find the card with lsblk!
 sudo umount ${DEV}?* 2>/dev/null
 sudo e2fsck -f $P2                                       # must be clean before shrinking
 NEW=$(( $(lsblk -bdno SIZE $P2) / 1048576 - 72 ))        # new size of p2 in MiB

@@ -11,9 +11,11 @@
 #   --no-overlay           do not enable the read-only root overlay at the end
 #   --disable-bt           also turn the Bluetooth hardware off (dtoverlay=disable-bt)
 #   --force-hotplug        add hdmi_force_hotplug=1 (output even with no monitor at boot)
-#   --make-data-partition  create the 'dockdata' partition in free space at the end
-#                          of the SD card if there is some (never shrinks anything;
-#                          otherwise prints how to make room on a PC)
+#   --make-data-partition  OPTIONAL. Create a real 'dockdata' partition in free
+#                          space at the end of the SD card (never shrinks
+#                          anything). Not needed: by default the installer keeps
+#                          settings in an ext4 image on the boot partition, so
+#                          nothing has to be repartitioned.
 #   --unlock               disable the overlay and read-only /boot, then reboot
 #   --uninstall            undo the system changes (keeps user 'dock' and settings)
 #   -h, --help             this help
@@ -36,6 +38,7 @@ CS_ETC=/etc/calcscreen
 DOCK_USER=dock
 DATA_LABEL=dockdata
 DATA_MIN_MIB=64
+DATA_IMG_MIB=64              # size of the auto-created settings image
 BAK=.calcscreen.bak
 
 DATA_MOUNT_UNIT=var-lib-dockd.mount
@@ -626,35 +629,9 @@ print_partition_howto() {
 EOF
 }
 
-setup_data_store() {
-    step "Persistent settings store ($STATE_DIR)"
-    local dev fstype opts
-    dev=$(blkid -L "$DATA_LABEL" 2>/dev/null || true)
-
-    if ! mountpoint -q "$STATE_DIR"; then
-        run mkdir -p "$STATE_DIR"
-        # Marker in the directory UNDER the mount point: dockd sees it only
-        # when the data partition is not mounted, i.e. settings will be lost.
-        write_file "$STATE_DIR/VOLATILE" 0644 <<'EOF'
-This directory is on the read-only overlay (RAM). Anything written here is
-lost at reboot. Create a partition labelled 'dockdata' (see pi/README.md)
-and re-run pi/install.sh to keep settings and Wi-Fi networks.
-EOF
-    fi
-
-    if [[ -z $dev ]]; then
-        remove_path "$UNIT_DIR/$DATA_MOUNT_UNIT" "$UNIT_DIR/$NM_CONN_UNIT" "$UNIT_DIR/$NM_STATE_UNIT" \
-            "$UNIT_DIR/$DATA_DEV_UNIT.d"
-        echo
-        warn "*****************************************************************"
-        warn "No partition labelled '$DATA_LABEL' was found."
-        warn "Settings (admin password, join code, audio output) and Wi-Fi"
-        warn "networks will be LOST AT EVERY REBOOT once the overlay is on."
-        warn "*****************************************************************"
-        print_partition_howto "$(boot_disk)" >&2
-        return 0
-    fi
-
+# Write the mount unit for a real 'dockdata' partition backend.
+data_unit_partition() {
+    local dev=$1 fstype opts
     fstype=$(blkid -o value -s TYPE "$dev")
     case $fstype in
         ext4) opts="rw,sync,dirsync,noatime,nodev,nosuid,noexec,data=journal,nofail" ;;
@@ -662,7 +639,6 @@ EOF
         *) die "$dev ($DATA_LABEL) is '$fstype'; reformat it: sudo mkfs.ext4 -L $DATA_LABEL $dev" ;;
     esac
     info "found $dev ($fstype)"
-
     # A native mount unit, NOT an fstab line: overlayroot rewrites fstab and
     # (recurse=1, its default) would put every fstab mount under a RAM overlay
     # too, silently discarding all writes. Unit files are left alone.
@@ -692,6 +668,112 @@ EOF
 [Unit]
 JobRunningTimeoutSec=10s
 EOF
+}
+
+# Write the mount unit for the loop-image backend (image on the FAT boot
+# partition, which stays writable). Pulls in the boot mount via
+# RequiresMountsFor; ext4's journal recovers a torn write, so no fsck unit.
+data_unit_image() {
+    local img=$1
+    write_file "$UNIT_DIR/$DATA_MOUNT_UNIT" 0644 <<EOF
+# calcScreen settings image on the boot partition. Installed by pi/install.sh.
+[Unit]
+Description=calcScreen persistent settings (image $img)
+RequiresMountsFor=$img
+Before=dockd.service
+
+[Mount]
+What=$img
+Where=$STATE_DIR
+Type=ext4
+# loop: systemd attaches the backing file. sync+dirsync+data=journal so a
+# write is durable before it returns; dockd also keeps two CRC-checked A/B
+# slots. The image is a fixed, preallocated file, so a runtime write never
+# changes the FAT metadata of the boot partition.
+Options=loop,rw,sync,dirsync,noatime,nodev,nosuid,noexec,data=journal,nofail
+DirectoryMode=0755
+
+[Install]
+WantedBy=local-fs.target
+EOF
+    remove_path "$UNIT_DIR/$DATA_DEV_UNIT.d"
+}
+
+# Create the ext4 settings image on the boot partition if it is not there yet.
+make_data_image() {
+    local img=$1
+    if [[ -f $img ]]; then
+        ok "settings image already exists: $img ($(du -h "$img" 2>/dev/null | cut -f1))"
+        return 0
+    fi
+    [[ -w $BOOT || -w $(dirname "$img") ]] || mountpoint -q "$BOOT" ||
+        warn "$BOOT may be read-only; if image creation fails, run 'sudo dock-unlock' first"
+    info "creating a ${DATA_IMG_MIB} MiB ext4 settings image on $BOOT (no repartitioning needed)"
+    if ((DRY_RUN)); then
+        info "[dry-run] truncate -s ${DATA_IMG_MIB}M $img; mkfs.ext4 -F -q -L $DATA_LABEL -m 0 $img"
+        return 0
+    fi
+    rm -f "$img.tmp"
+    truncate -s "${DATA_IMG_MIB}M" "$img.tmp"
+    mkfs.ext4 -F -q -L "$DATA_LABEL" -m 0 "$img.tmp"
+    sync
+    mv -f "$img.tmp" "$img"
+    sync
+    ok "created $img"
+}
+
+# Copy whatever dockd already wrote to the plain $STATE_DIR into a fresh
+# backend before its first mount. $1 = how to mount: "dev DEV" or "img IMG".
+seed_backend() {
+    local kind=$1 backing=$2 f has_files=0 tmpm
+    for f in "$STATE_DIR"/* "$STATE_DIR"/.[!.]*; do
+        [[ -e $f && ${f##*/} != VOLATILE ]] && has_files=1
+    done
+    ((has_files)) || return 0
+    tmpm=$(mktemp -d)
+    if [[ $kind == img ]]; then mount -o loop "$backing" "$tmpm"; else mount "$backing" "$tmpm"; fi
+    cp -an "$STATE_DIR/." "$tmpm/"
+    rm -f "$tmpm/VOLATILE"
+    sync
+    umount "$tmpm"
+    rmdir "$tmpm"
+    info "copied existing $STATE_DIR contents to the settings store"
+}
+
+setup_data_store() {
+    step "Persistent settings store ($STATE_DIR)"
+    local dev img="$BOOT/dockdata.img" backend_kind backend
+
+    dev=$(blkid -L "$DATA_LABEL" 2>/dev/null || true)
+
+    if ! mountpoint -q "$STATE_DIR"; then
+        run mkdir -p "$STATE_DIR"
+        # Marker in the directory UNDER the mount point: dockd sees it only if
+        # the real store fails to mount, i.e. settings would be lost.
+        write_file "$STATE_DIR/VOLATILE" 0644 <<'EOF'
+This directory is on the read-only overlay (RAM): writes here are lost at
+reboot. The settings store (a 'dockdata' partition, or the image on the boot
+partition) did not mount. Re-run pi/install.sh.
+EOF
+    fi
+
+    # Prefer a real 'dockdata' partition if one exists; otherwise create and
+    # use an ext4 image on the (writable) boot partition - no repartitioning.
+    if [[ -n $dev ]]; then
+        backend_kind=dev; backend=$dev
+        data_unit_partition "$dev"
+        remove_path "$CS_ETC/data-on-boot"   # data is on a partition: /boot may be ro
+    else
+        backend_kind=img; backend=$img
+        info "no '$DATA_LABEL' partition found; using an image on the boot partition"
+        make_data_image "$img"
+        data_unit_image "$img"
+        # Tell dock-lock to keep /boot writable so the image stays writable.
+        write_file "$CS_ETC/data-on-boot" 0644 <<EOF
+$img
+EOF
+    fi
+
     write_file "$UNIT_DIR/$NM_CONN_UNIT" 0644 <<EOF
 # Wi-Fi/network connections live on the settings partition so they survive
 # the read-only overlay. Installed by pi/install.sh.
@@ -732,26 +814,13 @@ EOF
     run systemctl daemon-reload
 
     if ((DRY_RUN)); then
-        info "[dry-run] would mount $dev on $STATE_DIR and seed nm-connections / nm-state"
+        info "[dry-run] would mount the $backend_kind store ($backend) on $STATE_DIR"
+        info "[dry-run] would seed nm-connections / nm-state"
     else
         if ! mountpoint -q "$STATE_DIR"; then
-            # carry over anything dockd already wrote to the plain directory
-            local f has_files=0
-            for f in "$STATE_DIR"/* "$STATE_DIR"/.[!.]*; do
-                if [[ -e $f && ${f##*/} != VOLATILE ]]; then has_files=1; fi
-            done
-            if ((has_files)); then
-                local tmpm
-                tmpm=$(mktemp -d)
-                mount "$dev" "$tmpm"
-                cp -an "$STATE_DIR/." "$tmpm/"
-                rm -f "$tmpm/VOLATILE"
-                sync
-                umount "$tmpm"
-                rmdir "$tmpm"
-                info "copied existing $STATE_DIR contents to $DATA_LABEL"
-            fi
-            systemctl start "$DATA_MOUNT_UNIT" || die "could not mount $dev on $STATE_DIR"
+            seed_backend "$backend_kind" "$backend"
+            systemctl start "$DATA_MOUNT_UNIT" ||
+                die "could not mount the settings store on $STATE_DIR"
         fi
         mountpoint -q "$STATE_DIR" || die "$STATE_DIR is not mounted"
         rm -f "$STATE_DIR/VOLATILE"
@@ -760,7 +829,7 @@ EOF
         # Seed once from the current system (e.g. Wi-Fi set up by Raspberry Pi Imager).
         if [[ -z $(ls -A "$STATE_DIR/nm-connections") ]] && [[ -d /etc/NetworkManager/system-connections ]]; then
             cp -a /etc/NetworkManager/system-connections/. "$STATE_DIR/nm-connections/"
-            info "copied existing Wi-Fi connections to $DATA_LABEL"
+            info "copied existing Wi-Fi connections to the settings store"
         fi
         if [[ -z $(ls -A "$STATE_DIR/nm-state") ]] && [[ -d /var/lib/NetworkManager ]]; then
             cp -a /var/lib/NetworkManager/. "$STATE_DIR/nm-state/"
@@ -770,7 +839,11 @@ EOF
     run systemctl enable "$DATA_MOUNT_UNIT" "$NM_CONN_UNIT" "$NM_STATE_UNIT"
     # Working area for the USB updater (staged package + phase/result).
     run install -d -m 0755 "$STATE_DIR/update"
-    ok "settings and Wi-Fi networks are stored on $dev"
+    if [[ $backend_kind == img ]]; then
+        ok "settings and Wi-Fi networks persist in $backend (on the boot partition)"
+    else
+        ok "settings and Wi-Fi networks are stored on $backend"
+    fi
 }
 
 configure_boot() {
@@ -857,8 +930,10 @@ do_install() {
         return 0
     fi
     info "Reboot to start the dock:  sudo reboot"
-    if ! blkid -L "$DATA_LABEL" >/dev/null 2>&1; then
-        warn "settings will NOT survive reboots (no '$DATA_LABEL' partition, see above)"
+    if [[ -f $CS_ETC/data-on-boot ]]; then
+        info "settings persist in an image on the boot partition (no extra partition needed)"
+    else
+        info "settings persist on the '$DATA_LABEL' partition"
     fi
 }
 
@@ -913,10 +988,11 @@ do_uninstall() {
 
     step "Done"
     info "Kept: user '$DOCK_USER' (remove with: sudo userdel -r $DOCK_USER),"
-    info "      $STATE_DIR contents and the '$DATA_LABEL' partition, /etc/default/dockd,"
-    info "      backups *$BAK, installed packages."
-    info "NetworkManager files stay on '$DATA_LABEL' until you copy them back:"
-    info "      sudo cp -a $STATE_DIR/nm-connections/. /etc/NetworkManager/system-connections/  (after reboot)"
+    info "      the settings store, /etc/default/dockd, backups *$BAK, installed packages."
+    if [[ -f $BOOT/dockdata.img ]]; then
+        info "      The settings image $BOOT/dockdata.img is left in place;"
+        info "      delete it with: sudo rm $BOOT/dockdata.img"
+    fi
     info "Reboot to get the normal console back:  sudo reboot"
 }
 
