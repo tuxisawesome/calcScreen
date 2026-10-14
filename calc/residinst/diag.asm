@@ -47,6 +47,10 @@ start:
 .s1ok:
 	ld	hl, s_ok
 	call	msg
+	ld	hl, s_gad		; " gadget@"
+	call	msg
+	ld	hl, (gadget_addr)
+	call	put_hex24		; the flash-unlock gadget address
 	call	nl
 
 	; --- step 2: find RESIDOCK by name; show where (0 = not present) ---
@@ -172,6 +176,7 @@ port_setup:
 	call	StrCmpre
 	pop	hl
 	jr	nz, .bad
+	ld	(gadget_addr), hl	; record it so we can display/inspect it
 	xor	a, a
 	ret
 .bad:
@@ -190,6 +195,7 @@ app_image_len := app_image_end - app_image
 hx_val:  rb 3
 hx_buf:  rb 8
 dest_var: rb 3
+gadget_addr: rb 3
 
 s_title: db "RESIDOCK diag 2", 0
 s_1:     db "1 unlock... ", 0
@@ -198,6 +204,7 @@ s_3:     db "3 free@", 0
 s_dest:  db " dest=", 0
 s_4:     db "4 at dest: ", 0
 s_ok:    db "OK", 0
+s_gad:   db " gadget@", 0
 s_none:  db "none", 0
 s_fail:  db "FAIL: OS?", 0
 s_allok: db "slot walk OK", 0
