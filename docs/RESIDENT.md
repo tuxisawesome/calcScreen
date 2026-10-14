@@ -108,12 +108,19 @@ to need retuning** — see the spec's §6 for the candidates (`appData`,
 `pixelShadow`, `saveSScreen`) and their trade-offs. If the mirror corrupts or
 the calc crashes shortly after install, suspect this first.
 
-## 6. The installer (documented, intentionally not shipped as code)
+## 6. The installer (`calc/residinst` → RESIDINS, EXPERIMENTAL / CEmu-only)
+
+**This is now implemented** as `calc/residinst/installer.asm` (an fasmg program
+that embeds `RESIDOCK.8ek` and installs it). It writes flash, so the warning at
+the top of this file applies in full: **CEmu-validate the whole install → run →
+uninstall cycle before running it on a physical calculator.** It assembles
+clean (fasmg, 18748 bytes with the current RESIDOCK).
 
 Getting an **unsigned** flash app into flash is the one unavoidable
 flash-writing step, and it is the proven `app_create` mechanism from
 MateoConLechuga, as shipped by Cesium and AsmHook2 (the latter is the modern
-OS-5.8.3+ tool, installed by arTIfiCE v3). The exact sequence, for reference:
+OS-5.8.3+ tool, installed by arTIfiCE v3). `installer.asm` is an independent
+reimplementation of it (not copied), and performs the exact sequence:
 
 1. **Locate the flash-unlock gadget by pattern-scanning the OS.** The unlock
    routine's address changes between OS versions, so `portSetup` searches the
@@ -132,32 +139,45 @@ OS-5.8.3+ tool, installed by arTIfiCE v3). The exact sequence, for reference:
    `table_offset`, and for each entry add the chosen flash base to the 3-byte
    pointer stored at `code_offset + entry`, rewriting it through `_WriteFlash`.
 
-`calc/tools/app2c.py` turns `RESIDOCK.8ek` into a C header (image bytes +
-`table_offset` + `code_offset` + relocation count) so an installer can embed it.
+`calc/tools/app2c.py` turns `RESIDOCK.8ek` into either a C header or (`--raw`)
+the bare image bytes that `installer.asm` embeds via fasmg's `file` directive.
 
-**Why this file documents the installer instead of shipping it as code:** step 1
-is a self-modifying, pattern-matched **flash-unlock gadget**, and steps 2–5
-erase/write flash. A bug — a wrong pattern match, a wrong base, an interrupted
-write — corrupts flash and forces a boot-code OS reinstall to recover. That code
-cannot be meaningfully verified without a calculator, and shipping an unverified,
-hand-ported flash-unlocker that could brick your device is not something to do
-blind. The safe paths, in order of preference:
+**Build it:**
 
-- **Reuse the proven installer directly.** AsmHook2's `src/installer.asm`,
-  `src/ports.asm` and `include/app.inc` (fasmg) are open source and do exactly
-  this; the cleanest route is to build the installer with fasmg from those,
-  embedding `RESIDOCK.8ek` as the payload, rather than re-implementing the
-  unlock in a second toolchain.
-- **Validate in CEmu first, always.** Only move to hardware after the full
-  install → run → uninstall cycle is solid in the emulator.
+```
+make -C calc/resident                       # RESIDOCK.8ek first
+make residinst FASMG=/path/to/fasmg \
+     INCLUDE=/path/to/ce-asm-include         # -> calc/residinst/RESIDINS.8xp
+```
 
-If you want me to port the installer anyway (CEmu-only, faithful to AsmHook2),
-say so and I will — this file is the design it would implement.
+`INCLUDE` must hold the standard CE asm includes (`ez80.inc`, `tiformat.inc`,
+`ti84pceg.inc`) shipped with the CE assembly tools; they are intentionally not
+vendored. Send `RESIDINS.8xp` to the calculator and run it (via arTIfiCE) to
+install RESIDOCK into `[apps]`.
+
+**What is and isn't verified.** The relocation logic — the part most likely to
+silently corrupt flash — was checked against the real image: RESIDOCK has 509
+six-byte entries `{patch_offset, value}` (both relative to the code base), and
+every patch site is a `0xFFFFFF` placeholder, so each relocated address is
+written over erased flash exactly as the installer assumes. What is **not**
+verified (needs CEmu): the pattern-scanned flash unlock on a live OS, the
+free-slot search, `_WriteFlash` behavior, and that convbin's relocation values
+are code-base-relative (assumed from the entry layout). A bug in the unlock or
+placement still corrupts flash and forces a boot-code OS reinstall to recover —
+hence CEmu first, always.
 
 ## 7. CEmu test plan
 
-Load `RESIDOCK.8ek` in CEmu (Debug build, with a legally-dumped OS ROM) and,
-once an installer has placed it in flash, check in order:
+In CEmu (Debug build, with a legally-dumped OS ROM), first validate the
+**installer** against the emulated flash (which you can reset freely):
+
+0. **Install.** Run `RESIDINS` (via arTIfiCE). Confirm it reports success,
+   `RESIDOCK` appears in `[apps]`, flash is re-locked afterward, and the app
+   header + relocated code look right in the debugger. Re-run it and confirm it
+   reports "already installed". Snapshot flash before each attempt so a bad
+   write is recoverable.
+
+Then validate the resident driver, in order:
 
 1. **Hook fires.** Put a breakpoint on `resident_hook`; confirm it is hit
    repeatedly while sitting idle at the homescreen (the `$1A`/`$1B` ticks).

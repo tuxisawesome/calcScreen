@@ -87,10 +87,15 @@ def main(argv):
     if len(args) < 2:
         sys.stderr.write("usage: app2c.py INPUT.8ek OUTPUT.h [--name=SYMBOL]\n")
         return 2
+    raw_mode = "--raw" in argv
     inp, outp = args[0], args[1]
     raw = open(inp, "rb").read()
     image, code_offset, table_offset = parse_8ek(raw)
-    open(outp, "w").write(emit(image, code_offset, table_offset, sym, inp))
+    if raw_mode:
+        # Just the app image bytes, e.g. for a fasmg `file` include.
+        open(outp, "wb").write(image)
+    else:
+        open(outp, "w").write(emit(image, code_offset, table_offset, sym, inp))
     sys.stderr.write("app2c: %s -> %s (%d bytes, code@%d, reloc table@%d)\n"
                      % (inp, outp, len(image), code_offset, table_offset))
     return 0

@@ -1,7 +1,7 @@
 # calcScreen top-level makefile. Each part has its own makefile; this just
 # drives them. See README.md.
 
-.PHONY: all test host calc tools sim e2e dist clean help
+.PHONY: all test host calc tools sim e2e dist clean help residinst
 
 help:
 	@echo "calcScreen targets:"
@@ -41,6 +41,13 @@ calc:
 	$(MAKE) -C calc/badapple
 	$(MAKE) -C calc/resident
 
+# The resident installer (RESIDINS). EXPERIMENTAL / CEmu-only; built with fasmg
+# and the standard CE asm includes, not the C toolchain, so it is a separate
+# target. Needs calc/resident built first. See docs/RESIDENT.md.
+#   make residinst FASMG=/path/to/fasmg INCLUDE=/path/to/ce-asm-include
+residinst:
+	$(MAKE) -C calc/residinst
+
 clean:
 	$(MAKE) -C tests clean
 	$(MAKE) -C host clean
@@ -48,4 +55,5 @@ clean:
 	-$(MAKE) -C calc/dock clean
 	-$(MAKE) -C calc/badapple clean
 	-$(MAKE) -C calc/resident clean
+	-$(MAKE) -C calc/residinst clean
 	rm -rf build

@@ -23,7 +23,7 @@ format, and **pi/README.md** for Raspberry Pi setup.
 |------|------|
 | `core/` | portable C99 shared by the Pi, the calculator and future ports |
 | `host/` | the Pi: `dockd` daemon, Linux drivers (`hal_linux`), simulator (`hal_sim`) |
-| `calc/` | calculator programs: embedded USB driver (`hal_ce`), SDK, DOCK, BADAPPLE, and the experimental resident fast-mirror flash app (`resident/`, see docs/RESIDENT.md) |
+| `calc/` | calculator programs: embedded USB driver (`hal_ce`), SDK, DOCK, BADAPPLE, the experimental resident fast-mirror flash app (`resident/`) and its installer (`residinst/`) — see docs/RESIDENT.md |
 | `pi/` | Raspberry Pi OS setup (installer, systemd, udev, boot config) |
 | `tools/` | `bavconv` and `make_badapple.sh` (run on a PC to prepare the demo) |
 | `video-convert.html` | in-browser converter: any (colour) video → `badapple.bav` + `.wav` |
