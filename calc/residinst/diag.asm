@@ -1,12 +1,12 @@
 ;-------------------------------------------------------------------------------
 ; RESIDIAG - read-only diagnostic for the RESIDOCK installer.
 ;
-; Writes NO flash and installs nothing - completely safe to run. It steps
-; through the same preparation the installer does (locate the flash-unlock
-; gadget, look the app up by name, walk the app headers to find the free slot)
-; and prints a checkpoint before each step, so if the calculator crashes the
-; last line on screen tells us which step is at fault. It stops before any
-; flash write.
+; Writes NO flash and installs nothing - completely safe to run. It runs the
+; same preparation the installer does (locate the flash-unlock gadget, look the
+; app up by name, walk the app headers to find the free slot) and prints a
+; checkpoint + the key addresses before each step, so a crash's last line names
+; the failing step and we can see where the installer would place the app. It
+; stops before any flash write.
 ;
 ; Build: fasmg diag.asm RESIDIAG.8xp   (needs the CE asm includes on INCLUDE)
 ;-------------------------------------------------------------------------------
@@ -20,7 +20,8 @@ StrCmpre     := 0x021DB0
 FindAppStart := 0x021100
 ArcChkNext   := 0x022044
 osFlags      := 0xD00080
-APP_NAME_OFFSET := 256 + 3
+APP_IMAGE_HEADER := 256
+APP_NAME_OFFSET  := APP_IMAGE_HEADER + 3
 
 	jp	start
 
@@ -33,78 +34,125 @@ start:
 	call	ti.PutS
 	call	ti.NewLine
 
-	; --- step 1: locate the flash-unlock gadget (read-only) ---
+	; --- step 1: locate the flash-unlock gadget ---
 	ld	hl, s_1
-	call	ti.PutS
-	call	port_setup		; sets flags only; no write
+	call	msg
+	call	port_setup
 	ld	iy, osFlags
 	or	a, a
 	jr	z, .s1ok
-	ld	hl, s_nogadget
-	call	ti.PutS
-	jp	finish			; cannot continue safely
+	ld	hl, s_fail
+	call	msg
+	jp	finish
 .s1ok:
 	ld	hl, s_ok
-	call	ti.PutS
-	call	ti.NewLine
+	call	msg
+	call	nl
 
-	; --- step 2: look RESIDOCK up by name (read-only) ---
+	; --- step 2: find RESIDOCK by name; show where (0 = not present) ---
 	ld	hl, s_2
-	call	ti.PutS
-	ld	hl, app_name
+	call	msg
+	ld	hl, app_image + APP_NAME_OFFSET
 	call	FindAppStart
 	ld	iy, osFlags
-	jr	nz, .s2new
-	ld	hl, s_exists
-	call	ti.PutS
-	jp	finish			; already installed; nothing to probe
-.s2new:
-	ld	hl, s_ok
-	call	ti.PutS
-	call	ti.NewLine
+	push	af			; preserve the found/not-found flag
+	jr	nz, .s2none
+	call	put_hex24		; HL = app location
+	jr	.s2done
+.s2none:
+	ld	hl, s_none
+	call	msg
+.s2done:
+	pop	af
+	call	nl
 
-	; --- step 3: walk app headers to find the free slot (read-only) ---
+	; --- step 3: walk app headers -> free boundary + computed dest ---
 	ld	hl, s_3
-	call	ti.PutS
+	call	msg
 	ld	hl, 0x3B0000
 .find:
 	push	hl
 	call	ArcChkNext
 	pop	de
 	jr	nz, .find
+	ex	de, hl			; hl = free boundary
 	ld	iy, osFlags
-	ld	hl, s_ok
-	call	ti.PutS
-	call	ti.NewLine
-
+	push	hl
+	call	put_hex24		; show the free boundary
+	ld	hl, s_dest
+	call	msg
+	pop	hl
+	ld	de, app_image_len
+	or	a, a
+	sbc	hl, de			; dest = boundary - image size
+	call	put_hex24		; show the computed destination
+	call	nl
 	ld	hl, s_allok
-	call	ti.PutS
+	call	msg
 
 finish:
-	call	ti.NewLine
+	call	nl
 	ld	hl, s_key
-	call	ti.PutS
+	call	msg
 	call	ti.GetKey
 	call	ti.ClrScrn
 	jp	ti.HomeUp
 
+; --- helpers ---
+msg:					; hl = string
+	ld	iy, osFlags
+	jp	ti.PutS
+nl:
+	ld	iy, osFlags
+	jp	ti.NewLine
+
+; print HL as 6 hex digits (preserves iy=flags for the PutS)
+put_hex24:
+	ld	(hx_val), hl
+	ld	hl, hx_buf
+	ld	a, (hx_val + 2)
+	call	.byte
+	ld	a, (hx_val + 1)
+	call	.byte
+	ld	a, (hx_val + 0)
+	call	.byte
+	ld	(hl), 0
+	ld	iy, osFlags
+	ld	hl, hx_buf
+	jp	ti.PutS
+.byte:
+	push	af
+	rra
+	rra
+	rra
+	rra
+	call	.nib
+	pop	af
+.nib:
+	and	a, 0x0F
+	add	a, 0x90
+	daa
+	adc	a, 0x40
+	daa
+	ld	(hl), a
+	inc	hl
+	ret
+
 ;-------------------------------------------------------------------------------
-; port_setup - locate the flash-unlock gadget by scanning the OS. Read-only;
-; returns A=0 and records nothing we use here, A<>0 if the OS is not recognised.
-; Full version WITH the OS-shape guard (confirms the jump table points at
-; CheckIfEmulated) so an unexpected OS bails instead of matching garbage.
+; port_setup - read-only; A=0 found, A<>0 OS not recognised. Includes the
+; OS-shape guard so an unexpected layout bails instead of matching garbage.
 ;-------------------------------------------------------------------------------
 port_setup:
 	di
 	ld	hl, (0x000008 + 5)
 	ld	a, (hl)
-	cp	a, 0xCD			; a CALL opcode?
+	cp	a, 0xCD
 	jr	nz, .bad
 	inc	hl
 	ld	de, (hl)
 	ld	hl, (ti.CheckIfEmulated + 1)
 	or	a, a
-	sbc	hl, de			; does it call CheckIfEmulated?
+	sbc	hl, de
 	jr	nz, .bad
 	ld	hl, (ti.KeypadScanFull + 1)
 	ld	bc, 10
@@ -112,10 +160,10 @@ port_setup:
 	push	hl
 	ld	b, port_pattern.len
 	ld	de, port_pattern
-	call	StrCmpre		; is the unlock gadget signature here?
+	call	StrCmpre
 	pop	hl
 	jr	nz, .bad
-	xor	a, a			; found
+	xor	a, a
 	ret
 .bad:
 	ld	a, 1
@@ -125,15 +173,21 @@ port_pattern:
 	db	0xED, 0x79, 0x78, 0xFE, 0xA0, 0x28, 0x01, 0xCF
 port_pattern.len := $ - port_pattern
 
-app_name:
-	file 'RESIDOCK.bin' : APP_NAME_OFFSET, 8   ; the 8-byte app name
+app_image:
+	file 'RESIDOCK.bin'
+app_image_end:
+app_image_len := app_image_end - app_image
 
-s_title:    db "RESIDOCK diagnostic", 0
-s_1:        db "1 unlock scan... ", 0
-s_2:        db "2 find app...    ", 0
-s_3:        db "3 free slot...   ", 0
-s_ok:       db "OK", 0
-s_nogadget: db "FAIL: OS not recognised", 0
-s_exists:   db "already installed", 0
-s_allok:    db "All checks passed.", 0
-s_key:      db "Press a key.", 0
+hx_val:  rb 3
+hx_buf:  rb 8
+
+s_title: db "RESIDOCK diag 2", 0
+s_1:     db "1 unlock... ", 0
+s_2:     db "2 app@", 0
+s_3:     db "3 free@", 0
+s_dest:  db " dest=", 0
+s_ok:    db "OK", 0
+s_none:  db "none", 0
+s_fail:  db "FAIL: OS?", 0
+s_allok: db "slot walk OK", 0
+s_key:   db "Press a key.", 0
