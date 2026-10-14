@@ -168,7 +168,13 @@ port_setup:
 	di
 	ld	hl, (0x000008 + 5)	; validate the OS call table shape
 	ld	a, (hl)
-	cp	a, 0xCD
+	cp	a, 0xCD			; a CALL opcode?
+	jr	nz, .unsupported
+	inc	hl
+	ld	de, (hl)
+	ld	hl, (ti.CheckIfEmulated + 1)
+	or	a, a
+	sbc	hl, de			; ...calling CheckIfEmulated? (bail if not)
 	jr	nz, .unsupported
 	ld	hl, (ti.KeypadScanFull + 1)
 	ld	bc, 10
