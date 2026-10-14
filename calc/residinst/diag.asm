@@ -85,7 +85,16 @@ start:
 	ld	de, app_image_len
 	or	a, a
 	sbc	hl, de			; dest = boundary - image size
+	ld	(dest_var), hl
 	call	put_hex24		; show the computed destination
+	call	nl
+	; --- step 4: read back the 3 bytes already in flash at dest ---
+	; FFFFFF = erased/free (good); 00 0F 81... = a previous write is there.
+	ld	hl, s_4
+	call	msg
+	ld	hl, (dest_var)
+	ld	hl, (hl)		; read 3 bytes at dest
+	call	put_hex24
 	call	nl
 	ld	hl, s_allok
 	call	msg
@@ -180,12 +189,14 @@ app_image_len := app_image_end - app_image
 
 hx_val:  rb 3
 hx_buf:  rb 8
+dest_var: rb 3
 
 s_title: db "RESIDOCK diag 2", 0
 s_1:     db "1 unlock... ", 0
 s_2:     db "2 app@", 0
 s_3:     db "3 free@", 0
 s_dest:  db " dest=", 0
+s_4:     db "4 at dest: ", 0
 s_ok:    db "OK", 0
 s_none:  db "none", 0
 s_fail:  db "FAIL: OS?", 0
